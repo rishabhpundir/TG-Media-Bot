@@ -218,16 +218,16 @@ async def enqueue_handler(event):
     target_dir = DIRECTORIES.get(cmd)
 
     # 3. Filename Extraction (Priority: Caption > Metadata Name > Timestamp)
-    possible_name = reply_msg.text
+    possible_name = reply_msg.text.strip().replace("_", " ").strip()
     
     if not possible_name:
-        possible_name = reply_msg.file.name
+        possible_name = reply_msg.file.name.strip().replace("_", "").strip()
     
     if not possible_name:
         possible_name = f"Unknown_File_{int(time.time())}"
 
     # 4. Extension Handling (Force .mkv)
-    if not possible_name.lower().endswith(".mkv"):
+    if not possible_name.strip().lower().endswith(".mkv"):
         possible_name += ".mkv"
 
     # 5. Sanitize
