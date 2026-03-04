@@ -192,7 +192,7 @@ async def cancel_handler(event):
 
     if task:
         task.cancel() # [cite: 82]
-        await event.reply("🛑 Requesting cancellation...")
+        await event.reply("🛑 Task Cancelled!")
     else:
         await event.reply("⚠️ No active download found for that message.")
 
@@ -220,18 +220,15 @@ async def enqueue_handler(event):
     # 3. Filename Extraction (Priority: Caption > Metadata Name > Timestamp)
     possible_name = reply_msg.text
     
-    # If no caption, try the internal filename attribute
     if not possible_name:
         possible_name = reply_msg.file.name
     
-    # If still nothing, generate a timestamped name
     if not possible_name:
         possible_name = f"Unknown_File_{int(time.time())}"
 
-    # 4. Extension Handling - Ensure the name ends with the correct extension (e.g., .mkv, .mp4)
-    real_ext = reply_msg.file.ext or ""
-    if real_ext and not possible_name.lower().endswith(real_ext.lower()):
-        possible_name += real_ext
+    # 4. Extension Handling (Force .mkv)
+    if not possible_name.lower().endswith(".mkv"):
+        possible_name += ".mkv"
 
     # 5. Sanitize
     clean_name = sanitize_filename(possible_name)
