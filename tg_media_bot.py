@@ -49,12 +49,15 @@ def sanitize_filename(filename):
     """
     Sanitizes filename to prevent filesystem errors.
     ONLY removes invalid characters (like / \ : * ? " < > |).
-    Preserves spaces and original formatting.
+    Preserves spaces, brackets, and original formatting.
     """
     # Remove ONLY invalid filesystem characters
     filename = re.sub(r'[\\/*?:"<>|]', '', filename)
     
-    # Do NOT replace spaces. Just strip leading/trailing whitespace.
+    # Remove newlines (critical if caption has multiple lines)
+    filename = filename.replace('\n', ' ').replace('\r', '')
+    
+    # Strip leading/trailing whitespace
     return filename.strip()
 
 
@@ -122,6 +125,7 @@ async def download_worker():
                 del active_downloads[status_msg.id]
             queue.task_done()
 
+
 async def perform_download(status_msg, reply_msg, folder_path, clean_name):
     """
     Executes the actual download logic with .part handling.
@@ -173,6 +177,7 @@ async def perform_download(status_msg, reply_msg, folder_path, clean_name):
 
 # --- COMMAND HANDLERS ---
 
+
 @client.on(events.NewMessage(pattern=r'^/cancel$'))
 async def cancel_handler(event):
     """
@@ -212,22 +217,31 @@ async def enqueue_handler(event):
     cmd = event.raw_text.strip().lower()
     target_dir = DIRECTORIES.get(cmd)
 
-    # 3. Filename Extraction & Sanitization
-    original_name = reply_msg.file.name
+    # 3. Filename Extraction (Priority: Caption > Metadata Name > Timestamp)
+    possible_name = reply_msg.text
     
-    if not original_name:
-        # If no user-visible title, keep doing what it's doing (generate safe name)
-        ext = reply_msg.file.ext or ""
-        original_name = f"Unknown_File_{int(time.time())}{ext}"
+    # If no caption, try the internal filename attribute
+    if not possible_name:
+        possible_name = reply_msg.file.name
     
-    clean_name = sanitize_filename(original_name)
+    # If still nothing, generate a timestamped name
+    if not possible_name:
+        possible_name = f"Unknown_File_{int(time.time())}"
 
-    # 4. Add to Queue
+    # 4. Extension Handling - Ensure the name ends with the correct extension (e.g., .mkv, .mp4)
+    real_ext = reply_msg.file.ext or ""
+    if real_ext and not possible_name.lower().endswith(real_ext.lower()):
+        possible_name += real_ext
+
+    # 5. Sanitize
+    clean_name = sanitize_filename(possible_name)
+
+    # 6. Add to Queue
     position = queue.qsize() + 1
     await queue.put((event, reply_msg, target_dir, clean_name))
 
     if current_concurrent_count >= MAX_CONCURRENT_DOWNLOADS:
-        await event.reply(f"⏳ **Added to Queue** (Position: {position})\nWait for a slot...")       
+        await event.reply(f"⏳ **Added to Queue** (Position: {position})\nWait for a slot...")
         
 
 # Start the worker loop
