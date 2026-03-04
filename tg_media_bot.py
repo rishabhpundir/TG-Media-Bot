@@ -44,15 +44,17 @@ def format_bytes(size):
         n += 1
     return f"{size:.2f} {power_labels[n]}B"
 
+
 def sanitize_filename(filename):
     """
-    Sanitizes filename to prevent filesystem errors and path traversal. [cite: 34]
+    Sanitizes filename to prevent filesystem errors.
+    ONLY removes invalid characters (like / \ : * ? " < > |).
+    Preserves spaces and original formatting.
     """
-    # Remove invalid filesystem characters [cite: 37]
+    # Remove ONLY invalid filesystem characters
     filename = re.sub(r'[\\/*?:"<>|]', '', filename)
-    # Replace spaces with underscores [cite: 38]
-    filename = filename.replace(' ', '.')
-    # Remove trailing spaces [cite: 40]
+    
+    # Do NOT replace spaces. Just strip leading/trailing whitespace.
     return filename.strip()
 
 
@@ -189,6 +191,7 @@ async def cancel_handler(event):
     else:
         await event.reply("⚠️ No active download found for that message.")
 
+
 @client.on(events.NewMessage(pattern=r'^/(mv|tv)$'))
 async def enqueue_handler(event):
     if not event.is_reply:
@@ -200,7 +203,7 @@ async def enqueue_handler(event):
         await event.reply("❌ No media found.")
         return
 
-    # 1. Size Limit Check [cite: 68]
+    # 1. Size Limit Check
     if reply_msg.file.size > MAX_FILE_SIZE_BYTES:
         await event.reply(f"❌ **File too large.**\nLimit: {MAX_FILE_SIZE_GB}GB")
         return
@@ -209,16 +212,23 @@ async def enqueue_handler(event):
     cmd = event.raw_text.strip().lower()
     target_dir = DIRECTORIES.get(cmd)
 
-    # 3. Filename Sanitization [cite: 36]
-    original_name = reply_msg.file.name or "unknown_file.mp4"
+    # 3. Filename Extraction & Sanitization
+    original_name = reply_msg.file.name
+    
+    if not original_name:
+        # If no user-visible title, keep doing what it's doing (generate safe name)
+        ext = reply_msg.file.ext or ""
+        original_name = f"Unknown_File_{int(time.time())}{ext}"
+    
     clean_name = sanitize_filename(original_name)
 
-    # 4. Add to Queue [cite: 56]
+    # 4. Add to Queue
     position = queue.qsize() + 1
     await queue.put((event, reply_msg, target_dir, clean_name))
-    
+
     if current_concurrent_count >= MAX_CONCURRENT_DOWNLOADS:
-        await event.reply(f"⏳ **Added to Queue** (Position: {position})\nWait for a slot...")
+        await event.reply(f"⏳ **Added to Queue** (Position: {position})\nWait for a slot...")       
+        
 
 # Start the worker loop
 client.loop.create_task(download_worker())
