@@ -227,11 +227,11 @@ async def enqueue_handler(event):
         possible_name = f"Unknown_File_{int(time.time())}"
 
     # 4. Extension Handling (Force .mkv)
-    if not possible_name.strip().lower().endswith(".mkv"):
+    if ".mkv" in possible_name.strip().lower():
         possible_name += ".mkv"
 
     # 5. Sanitize
-    clean_name = sanitize_filename(possible_name)
+    clean_name = sanitize_filename(possible_name.strip())
 
     # 6. Add to Queue
     position = queue.qsize() + 1
