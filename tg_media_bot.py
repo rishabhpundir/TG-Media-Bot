@@ -177,30 +177,73 @@ async def cancel_handler(event):
     else:
         await event.reply("⚠️ No active download found.")
         
-@bot.on(events.NewMessage(pattern=r'^/del$'))
+@bot.on(events.NewMessage(pattern=r'^/del'))
 async def delete_handler(event):
-    if not event.is_reply:
-        return await event.reply("⚠️ Reply to a completed download message to delete the file.")
-    
-    reply_msg = await event.get_reply_message()
-    
-    # Extract the filepath wrapped in quotes from the completed download message
-    match = re.search(r'📂 \*\*Path:\*\* "(.*?)"', reply_msg.text)
-    
-    if not match:
-        return await event.reply("❌ Could not find a valid file path in the replied message.")
+    # --- SCENARIO 1: Replied to a message ---
+    if event.is_reply:
+        reply_msg = await event.get_reply_message()
         
-    filepath = match.group(1)
-    
-    if os.path.exists(filepath):
-        try:
-            os.remove(filepath)
-            filename = os.path.basename(filepath)
-            await event.reply(f"🗑️ **File deleted:** `{filename}`")
-        except Exception as e:
-            await event.reply(f"❌ **Failed to delete:** `{str(e)}`")
+        # Extract the filepath wrapped in quotes from the completed download message
+        match = re.search(r'📂 \*\*Path:\*\* "(.*?)"', reply_msg.text)
+        
+        if not match:
+            return await event.reply("❌ Could not find a valid file path in the replied message.")
+            
+        filepath = match.group(1)
+        
+        if os.path.exists(filepath):
+            try:
+                os.remove(filepath)
+                filename = os.path.basename(filepath)
+                await event.reply(f"🗑️ **File deleted:** `{filename}`")
+            except Exception as e:
+                await event.reply(f"❌ **Failed to delete:** `{str(e)}`")
+        else:
+            await event.reply(f"⚠️ **File not found at path:** `{filepath}`")
+            
+    # --- SCENARIO 2: Standalone command with parameters (/del mv keyword) ---
     else:
-        await event.reply(f"⚠️ **File not found at path:** `{filepath}`")
+        parts = event.text.strip().split(maxsplit=2)
+        
+        if len(parts) < 3:
+            return await event.reply("❌ **Usage:** `/del mv <keyword>` or `/del tv <keyword>`\n*(Or reply to a completed download message)*")
+            
+        dir_key = f"/{parts[1].lower()}"  # Converts 'mv' to '/mv'
+        keyword = parts[2].lower()
+        
+        target_dir = DIRECTORIES.get(dir_key)
+        
+        if not target_dir:
+            return await event.reply("❌ **Invalid directory.** Please use `mv` or `tv`.")
+            
+        if not os.path.exists(target_dir):
+            return await event.reply(f"❌ **Directory not found:** `{target_dir}`")
+
+        deleted_files = []
+        
+        # Recursively search and delete files containing the keyword
+        for root, dirs, files in os.walk(target_dir):
+            for file in files:
+                if keyword in file.lower():
+                    filepath = os.path.join(root, file)
+                    try:
+                        os.remove(filepath)
+                        deleted_files.append(file)
+                    except Exception as e:
+                        print(f"Failed to delete {filepath}: {e}")
+        
+        # Format the response
+        if deleted_files:
+            msg = f"🗑️ **Deleted {len(deleted_files)} file(s) containing '{keyword}':**\n\n"
+            # Show up to 10 filenames to avoid Telegram message length limits
+            msg += "\n".join([f"• `{f}`" for f in deleted_files[:10]])
+            
+            if len(deleted_files) > 10:
+                msg += f"\n\n*...and {len(deleted_files) - 10} more.*"
+                
+            await event.reply(msg)
+        else:
+            await event.reply(f"⚠️ No files found containing `{keyword}` in the `{parts[1]}` directory.")
 
 # 1. STANDARD HANDLER (/mv, /tv)
 @bot.on(events.NewMessage(pattern=r'^/(mv|tv)$'))
