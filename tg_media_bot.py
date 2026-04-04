@@ -3,7 +3,7 @@ import os
 import time
 import asyncio
 from dotenv import load_dotenv
-from telethon import TelegramClient, events, utils
+from telethon import TelegramClient, events
 
 load_dotenv(override=True)
 
@@ -64,7 +64,7 @@ def ensure_mkv_extension(filename):
         filename += ".mkv"
     return filename
 
-async def progress_bar(current, total, event, start_time, last_update_time):
+async def progress_bar(current, total, event, start_time, last_update_time, filename):
     now = time.time()
     if (now - last_update_time[0]) < 3 and current != total:
         return
@@ -79,7 +79,7 @@ async def progress_bar(current, total, event, start_time, last_update_time):
     progress_str = "🟦" * completed_blocks + "⬜" * (10 - completed_blocks)
 
     text = (
-        f"**Downloading...**\n"
+        f"**Downloading:** `{filename}`\n"
         f"{progress_str} **{percentage:.1f}%**\n"
         f"💾 `{format_bytes(current)} / {format_bytes(total)}`\n"
         f"🚀 `{format_bytes(speed)}/s` | ⏳ `{int(eta)}s`\n\n"
@@ -138,16 +138,22 @@ async def perform_download(status_msg, media_msg, folder_path, clean_name):
 
     try:
         # download_media automatically uses the client that fetched the message
-        # So if media_msg came from userbot, userbot downloads it.
         await media_msg.download_media(
             file=temp_path,
             progress_callback=lambda c, t: bot.loop.create_task(
-                progress_bar(c, t, status_msg, start_time, last_update)
+                progress_bar(c, t, status_msg, start_time, last_update, clean_name)
             )
         )
 
         os.rename(temp_path, final_path)
-        await status_msg.edit(f"✅ **Download Complete!**\n📄 `{clean_name}`\n📂 `{folder_path}`")
+        
+        # Calculate final size and update message with full path in quotes
+        file_size_str = format_bytes(os.path.getsize(final_path))
+        await status_msg.edit(
+            f"✅ **Download Complete!**\n"
+            f"💾 **Size:** `{file_size_str}`\n"
+            f"📂 **Path:** \"{final_path}\""
+        )
 
     except asyncio.CancelledError:
         if os.path.exists(temp_path): os.remove(temp_path)
@@ -170,6 +176,31 @@ async def cancel_handler(event):
         await event.reply("🛑 Task Cancelled!")
     else:
         await event.reply("⚠️ No active download found.")
+        
+@bot.on(events.NewMessage(pattern=r'^/del$'))
+async def delete_handler(event):
+    if not event.is_reply:
+        return await event.reply("⚠️ Reply to a completed download message to delete the file.")
+    
+    reply_msg = await event.get_reply_message()
+    
+    # Extract the filepath wrapped in quotes from the completed download message
+    match = re.search(r'📂 \*\*Path:\*\* "(.*?)"', reply_msg.text)
+    
+    if not match:
+        return await event.reply("❌ Could not find a valid file path in the replied message.")
+        
+    filepath = match.group(1)
+    
+    if os.path.exists(filepath):
+        try:
+            os.remove(filepath)
+            filename = os.path.basename(filepath)
+            await event.reply(f"🗑️ **File deleted:** `{filename}`")
+        except Exception as e:
+            await event.reply(f"❌ **Failed to delete:** `{str(e)}`")
+    else:
+        await event.reply(f"⚠️ **File not found at path:** `{filepath}`")
 
 # 1. STANDARD HANDLER (/mv, /tv)
 @bot.on(events.NewMessage(pattern=r'^/(mv|tv)$'))
