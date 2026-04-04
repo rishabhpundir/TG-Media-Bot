@@ -16,7 +16,7 @@ BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 DIRECTORIES = {
     '/mv': '/mnt/blue/movies',
     '/tv': '/mnt/blue/tv',
-    '/lmv': '/mnt/blue/movies', # Link variants
+    '/lmv': '/mnt/blue/movies',
     '/ltv': '/mnt/blue/tv'
 }
 

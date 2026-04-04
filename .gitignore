@@ -214,5 +214,5 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
-*.session
+*session*
 bot_session.session
