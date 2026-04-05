@@ -1,6 +1,8 @@
 import re
 import os
 import time
+import json
+import shutil
 import asyncio
 from dotenv import load_dotenv
 from telethon import TelegramClient, events
@@ -11,33 +13,61 @@ load_dotenv(override=True)
 API_ID = int(os.getenv("TELEGRAM_API_ID"))
 API_HASH = os.getenv("TELEGRAM_API_HASH")
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+START_PASSWORD = os.getenv("START_PASSWORD")
 
 # Directory Paths
 DIRECTORIES = {
     '/mv': '/mnt/blue/movies',
     '/tv': '/mnt/blue/tv',
     '/lmv': '/mnt/blue/movies',
-    '/ltv': '/mnt/blue/tv'
+    '/ltv': '/mnt/blue/tv',
+    '/mv2': '/mnt/media/movies',
+    '/tv2': '/mnt/media/tv',
+    '/lmv2': '/mnt/media/movies',
+    '/ltv2': '/mnt/media/tv'
 }
 
 # Constraints
 MAX_CONCURRENT_DOWNLOADS = 2
 MAX_FILE_SIZE_GB = 20
 MAX_FILE_SIZE_BYTES = MAX_FILE_SIZE_GB * 1024 * 1024 * 1024
+AUTH_FILE = "auth_sessions.json" # Secures user states away from main code
 
 # --- STATE MANAGEMENT ---
 queue = asyncio.Queue()
 active_downloads = {} 
+pending_deletions = {}
 current_concurrent_count = 0
 
-# --- INITIALIZE DUAL CLIENTS ---
-# 1. The Bot (Interacts with you)
-bot = TelegramClient('bot_session', API_ID, API_HASH).start(bot_token=BOT_TOKEN)
+# Auth states
+auth_attempts = {}       # Tracks {user_id: attempts_count}
+pending_passwords = {}   # Tracks {prompt_message_id: user_id}
 
-# 2. The Userbot (Interacts with restricted channels)
-userbot = TelegramClient('user_session', API_ID, API_HASH)
+# --- INITIALIZE DUAL CLIENTS ---
+bot = TelegramClient('bot_session', API_ID, API_HASH).start(bot_token=BOT_TOKEN)    # 1. The Bot (Interacts with you)
+userbot = TelegramClient('user_session', API_ID, API_HASH)                          # 2. The Userbot (Interacts with restricted channels)
+
 
 # --- HELPER FUNCTIONS ---
+def load_auth():
+    """Loads authorized users from JSON file."""
+    if not os.path.exists(AUTH_FILE): 
+        return {}
+    with open(AUTH_FILE, "r") as f: 
+        return json.load(f)
+
+
+def save_auth(data):
+    """Saves authorized users to JSON file."""
+    with open(AUTH_FILE, "w") as f: 
+        json.dump(data, f)
+
+
+def is_authorized(user_id):
+    """Checks if a user is currently authorized."""
+    auth_data = load_auth()
+    return auth_data.get(str(user_id), False)
+
 
 def format_bytes(size):
     power = 2**10
@@ -47,6 +77,7 @@ def format_bytes(size):
         size /= power
         n += 1
     return f"{size:.2f} {power_labels[n]}B"
+
 
 def sanitize_filename(filename):
     """
@@ -58,11 +89,13 @@ def sanitize_filename(filename):
     filename = filename.replace('\n', ' ').replace('\r', '')
     return filename.strip()
 
+
 def ensure_mkv_extension(filename):
     """Ensures file ends in .mkv without duplication"""
     if not filename.lower().endswith(".mkv"):
         filename += ".mkv"
     return filename
+
 
 async def progress_bar(current, total, event, start_time, last_update_time, filename):
     now = time.time()
@@ -90,8 +123,8 @@ async def progress_bar(current, total, event, start_time, last_update_time, file
     except:
         pass
 
-# --- CORE WORKER LOGIC ---
 
+# --- CORE WORKER LOGIC ---
 async def download_worker():
     global current_concurrent_count
     
@@ -123,6 +156,7 @@ async def download_worker():
             if status_msg.id in active_downloads:
                 del active_downloads[status_msg.id]
             queue.task_done()
+
 
 async def perform_download(status_msg, media_msg, folder_path, clean_name):
     os.makedirs(folder_path, exist_ok=True)
@@ -161,93 +195,253 @@ async def perform_download(status_msg, media_msg, folder_path, clean_name):
     except Exception as e:
         if os.path.exists(temp_path): os.remove(temp_path)
         await status_msg.edit(f"❌ **Failed:** `{str(e)}`")
-
+        
+        
 # --- HANDLERS ---
+@bot.on(events.NewMessage(pattern=r'^/start$'))
+async def start_handler(event):
+    user_id = event.sender_id
+    
+    # 1. Reset auth state to False in the secure JSON file
+    auth_data = load_auth()
+    auth_data[str(user_id)] = False
+    save_auth(auth_data)
+    
+    # 2. Reset failed attempts
+    auth_attempts[user_id] = 0
+    
+    # 3. Prompt for password and track the message ID
+    msg = await event.reply("🔒 **Bot is locked.**\nPlease reply to THIS message with the password to unlock.")
+    pending_passwords[msg.id] = user_id
+
+
+@bot.on(events.NewMessage(func=lambda e: e.is_reply))
+async def password_handler(event):
+    reply_msg = await event.get_reply_message()
+    
+    # Check if this reply is specifically replying to our password prompt
+    if reply_msg.id not in pending_passwords:
+        return 
+        
+    user_id = event.sender_id
+    if pending_passwords[reply_msg.id] != user_id:
+        return
+        
+    entered_password = event.text.strip()
+    
+    if entered_password == START_PASSWORD:
+        # --- SUCCESSFUL LOGIN ---
+        
+        # 1. Instantly delete the user's password message for both sides
+        try:
+            await event.delete() 
+        except Exception as e:
+            print(f"Could not delete password message: {e}")
+        
+        # 2. Update auth state to True in JSON
+        auth_data = load_auth()
+        auth_data[str(user_id)] = True
+        save_auth(auth_data)
+        
+        # 3. Cleanup session trackers
+        del pending_passwords[reply_msg.id]
+        if user_id in auth_attempts:
+            del auth_attempts[user_id]
+            
+        # 4. Send the command list
+        commands_text = """✅ **Access Granted! Welcome.**
+
+**Command List**
+`/mv` / `/mv2` - Reply to a file to download it to `/mnt/blue/movies` or `/mnt/media/movies` respectively.
+`/tv` / `/tv2` - Reply to a file to download it to `/mnt/blue/tv` or `/mnt/media/tv` respectively.
+`/lmv <link>` / `/lmv2 <link>` - Fetch media from a restricted channel link to the respective movies directory.
+`/ltv <link>` / `/ltv2 <link>` - Fetch media from a restricted channel link to the respective TV directory.
+`/list <mv|tv|mv2|tv2>` - Lists all folders (📁) and files (📄) in the specified directory target.
+`/cancel` - Reply to an active download status or a pending deletion list to safely abort the operation.
+`/del` - Reply to a "Download Complete" message, or a pending multi-keyword list, to permanently delete the files.
+`/del <mv|tv|mv2|tv2> <keyword1.keyword2>` - Searches for items containing all dot-separated keywords; generates a list requiring a `/del` reply to confirm."""
+        
+        await event.respond(commands_text)
+        
+    else:
+        # --- FAILED LOGIN ---
+        attempts = auth_attempts.get(user_id, 0) + 1
+        auth_attempts[user_id] = attempts
+        
+        if attempts >= 3:
+            # Max attempts reached, clear the prompt tracking
+            del pending_passwords[reply_msg.id]
+            del auth_attempts[user_id]
+            await event.reply("❌ **Max attempts reached.** The process has been reset. Send `/start` to try again.")
+        else:
+            # Re-prompt and update tracking
+            new_prompt = await event.reply(f"❌ **Incorrect password.** ({attempts}/3 attempts)\nPlease reply to THIS message with the correct password.")
+            del pending_passwords[reply_msg.id]
+            pending_passwords[new_prompt.id] = user_id
+
 
 @bot.on(events.NewMessage(pattern=r'^/cancel$'))
 async def cancel_handler(event):
+    if not is_authorized(event.sender_id):
+        return
+    
     if not event.is_reply:
-        await event.reply("⚠️ Reply to the **download status message** to cancel it.")
+        await event.reply("⚠️ Reply to a status message to cancel it.")
         return
     reply_msg = await event.get_reply_message()
+    
+    # Check for active download task
     task = active_downloads.get(reply_msg.id)
     if task:
         task.cancel()
-        await event.reply("🛑 Task Cancelled!")
-    else:
-        await event.reply("⚠️ No active download found.")
+        return await event.reply("🛑 Task Cancelled!")
+        
+    # Check for pending deletion confirmation
+    if reply_msg.id in pending_deletions:
+        del pending_deletions[reply_msg.id]
+        return await event.reply("🛑 Deletion Operation Cancelled!")
+        
+    await event.reply("⚠️ No active task or pending operation found.")
+        
         
 @bot.on(events.NewMessage(pattern=r'^/del'))
 async def delete_handler(event):
+    if not is_authorized(event.sender_id):
+        return
+    
     # --- SCENARIO 1: Replied to a message ---
     if event.is_reply:
         reply_msg = await event.get_reply_message()
         
-        # Extract the filepath wrapped in quotes from the completed download message
+        # Check if replied to a Pending Bulk Deletion List
+        if reply_msg.id in pending_deletions:
+            paths_to_delete = pending_deletions[reply_msg.id]
+            deleted_count = 0
+            for path in paths_to_delete:
+                try:
+                    if os.path.isdir(path):
+                        shutil.rmtree(path)
+                    elif os.path.exists(path):
+                        os.remove(path)
+                    deleted_count += 1
+                except Exception as e:
+                    print(f"Failed to delete {path}: {e}")
+                    
+            del pending_deletions[reply_msg.id] # Clean state
+            return await event.reply(f"✅ **Successfully deleted {deleted_count} items.**")
+            
+        # Check if replied to a single completed download
         match = re.search(r'📂 \*\*Path:\*\* "(.*?)"', reply_msg.text)
-        
-        if not match:
-            return await event.reply("❌ Could not find a valid file path in the replied message.")
+        if match:
+            filepath = match.group(1)
+            if os.path.exists(filepath):
+                try:
+                    os.remove(filepath)
+                    filename = os.path.basename(filepath)
+                    await event.reply(f"🗑️ **File deleted:** `{filename}`")
+                except Exception as e:
+                    await event.reply(f"❌ **Failed to delete:** `{str(e)}`")
+            else:
+                await event.reply(f"⚠️ **File not found at path:** `{filepath}`")
+            return
             
-        filepath = match.group(1)
-        
-        if os.path.exists(filepath):
-            try:
-                os.remove(filepath)
-                filename = os.path.basename(filepath)
-                await event.reply(f"🗑️ **File deleted:** `{filename}`")
-            except Exception as e:
-                await event.reply(f"❌ **Failed to delete:** `{str(e)}`")
-        else:
-            await event.reply(f"⚠️ **File not found at path:** `{filepath}`")
-            
-    # --- SCENARIO 2: Standalone command with parameters (/del mv keyword) ---
+        return await event.reply("❌ Invalid message replied to.")
+
+    # --- SCENARIO 2: Standalone command with parameters (/del <dir> <keywords>) ---
     else:
         parts = event.text.strip().split(maxsplit=2)
         
         if len(parts) < 3:
-            return await event.reply("❌ **Usage:** `/del mv <keyword>` or `/del tv <keyword>`\n*(Or reply to a completed download message)*")
+            return await event.reply("❌ **Usage:** `/del mv <keyword.keyword2>`\n*(Or reply to a completed message)*")
             
-        dir_key = f"/{parts[1].lower()}"  # Converts 'mv' to '/mv'
-        keyword = parts[2].lower()
+        dir_key = f"/{parts[1].lower()}"
+        raw_keywords = parts[2].lower()
+        keywords = raw_keywords.split('.') # Split by dot
         
         target_dir = DIRECTORIES.get(dir_key)
         
         if not target_dir:
-            return await event.reply("❌ **Invalid directory.** Please use `mv` or `tv`.")
+            return await event.reply("❌ **Invalid directory.** Available: `mv, tv, mv2, tv2`.")
             
         if not os.path.exists(target_dir):
             return await event.reply(f"❌ **Directory not found:** `{target_dir}`")
 
-        deleted_files = []
+        matched_paths = []
         
-        # Recursively search and delete files containing the keyword
+        # Recursively search files and folders
         for root, dirs, files in os.walk(target_dir):
-            for file in files:
-                if keyword in file.lower():
-                    filepath = os.path.join(root, file)
-                    try:
-                        os.remove(filepath)
-                        deleted_files.append(file)
-                    except Exception as e:
-                        print(f"Failed to delete {filepath}: {e}")
+            # Check Folders
+            for d in dirs:
+                if all(k in d.lower() for k in keywords):
+                    matched_paths.append(os.path.join(root, d))
+            # Check Files
+            for f in files:
+                if all(k in f.lower() for k in keywords):
+                    # Prevent listing a file if its parent folder is already slated for deletion
+                    parent_matched = any(root.startswith(p) for p in matched_paths)
+                    if not parent_matched:
+                        matched_paths.append(os.path.join(root, f))
         
-        # Format the response
-        if deleted_files:
-            msg = f"🗑️ **Deleted {len(deleted_files)} file(s) containing '{keyword}':**\n\n"
-            # Show up to 10 filenames to avoid Telegram message length limits
-            msg += "\n".join([f"• `{f}`" for f in deleted_files[:10]])
-            
-            if len(deleted_files) > 10:
-                msg += f"\n\n*...and {len(deleted_files) - 10} more.*"
+        if matched_paths:
+            msg = f"⚠️ **Found {len(matched_paths)} match(es) for '{raw_keywords}':**\n\n"
+            msg += "\n".join([f"`{p}`" for p in matched_paths[:15]])
+            if len(matched_paths) > 15:
+                msg += f"\n\n*...and {len(matched_paths) - 15} more.*"
                 
-            await event.reply(msg)
+            msg += "\n\n⚠️ **Reply to this message with `/del` to confirm, or `/cancel` to abort.**"
+            
+            sent_msg = await event.reply(msg)
+            pending_deletions[sent_msg.id] = matched_paths # Save to state for confirmation
         else:
-            await event.reply(f"⚠️ No files found containing `{keyword}` in the `{parts[1]}` directory.")
+            await event.reply(f"⚠️ No matches found for all keywords `{raw_keywords}` in `{parts[1]}`.")
+
+
+@bot.on(events.NewMessage(pattern=r'^/list (mv|tv|mv2|tv2)$'))
+async def list_handler(event):
+    if not is_authorized(event.sender_id):
+        return
+    
+    cmd = event.text.strip().split()
+    if len(cmd) < 2: return await event.reply("❌ Usage: `/list <dirname>`")
+        
+    dir_key = f"/{cmd[1].lower()}"
+    target_dir = DIRECTORIES.get(dir_key)
+    
+    if not os.path.exists(target_dir):
+        return await event.reply(f"❌ **Directory not found:** `{target_dir}`")
+        
+    items = os.listdir(target_dir)
+    if not items:
+        return await event.reply(f"📂 **{target_dir}** is currently empty.")
+        
+    # Sort and separate into folders and files
+    folders = sorted([i for i in items if os.path.isdir(os.path.join(target_dir, i))])
+    files = sorted([i for i in items if os.path.isfile(os.path.join(target_dir, i))])
+    
+    msg = f"📂 **Directory:** `{target_dir}`\n\n"
+    
+    if folders:
+        msg += "**Folders:**\n"
+        for f in folders[:20]:
+            msg += f"📁 `{f}`\n"
+        if len(folders) > 20: msg += f"*...and {len(folders)-20} more.*\n"
+        msg += "\n"
+        
+    if files:
+        msg += "**Files:**\n"
+        for f in files[:40]:
+            msg += f"📄 `{f}`\n"
+        if len(files) > 40: msg += f"*...and {len(files)-40} more.*\n"
+        
+    await event.reply(msg)
+
 
 # 1. STANDARD HANDLER (/mv, /tv)
-@bot.on(events.NewMessage(pattern=r'^/(mv|tv)$'))
+@bot.on(events.NewMessage(pattern=r'^/(mv|tv|mv2|tv2)$'))
 async def standard_handler(event):
+    if not is_authorized(event.sender_id):
+        return
+    
     if not event.is_reply: return await event.reply("❌ Reply to a file.")
     reply_msg = await event.get_reply_message()
     if not reply_msg.media: return await event.reply("❌ No media found.")
@@ -273,11 +467,14 @@ async def standard_handler(event):
 
 
 # 2. LINK HANDLER (/lmv, /ltv) (Fixed Regex & Logic)
-@bot.on(events.NewMessage(pattern=r'^/l(mv|tv)'))  # Matches /lmv <link>
+@bot.on(events.NewMessage(pattern=r'^/l(mv|tv|mv2|tv2)'))
 async def link_handler(event):
     """
     Handles links by asking the Userbot to fetch the message.
     """
+    if not is_authorized(event.sender_id):
+        return
+    
     text_split = event.text.strip().split(maxsplit=1)
     if len(text_split) < 2:
         return await event.reply("❌ Usage: `/lmv <link>` or `/ltv <link>`")
@@ -336,6 +533,7 @@ async def link_handler(event):
     except Exception as e:
         await status.edit(f"❌ **Userbot Error:** `{str(e)}`\nMake sure your account has joined the channel.")
 
+
 # --- MAIN EXECUTION ---
 async def main():
     print("Starting Userbot...")
@@ -355,10 +553,10 @@ async def main():
         userbot.run_until_disconnected()
     )
 
+
 if __name__ == '__main__':
     # Use bot.loop to run the main async function
     bot.loop.run_until_complete(main())
-    
     
     
     
