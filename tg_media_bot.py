@@ -1,7 +1,6 @@
 import re
 import os
 import time
-import json
 import shutil
 import asyncio
 from dotenv import load_dotenv
@@ -13,7 +12,8 @@ load_dotenv(override=True)
 API_ID = int(os.getenv("TELEGRAM_API_ID"))
 API_HASH = os.getenv("TELEGRAM_API_HASH")
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-START_PASSWORD = os.getenv("START_PASSWORD")
+ALLOWED_USERS_ = os.getenv("ALLOWED_USERS", "")
+ALLOWED_USERS = [int(x.strip()) for x in ALLOWED_USERS_.split(",") if x.strip()]
 
 # Directory Paths
 DIRECTORIES = {
@@ -31,7 +31,6 @@ DIRECTORIES = {
 MAX_CONCURRENT_DOWNLOADS = 2
 MAX_FILE_SIZE_GB = 20
 MAX_FILE_SIZE_BYTES = MAX_FILE_SIZE_GB * 1024 * 1024 * 1024
-AUTH_FILE = "auth_sessions.json" # Secures user states away from main code
 
 # --- STATE MANAGEMENT ---
 queue = asyncio.Queue()
@@ -39,36 +38,12 @@ active_downloads = {}
 pending_deletions = {}
 current_concurrent_count = 0
 
-# Auth states
-auth_attempts = {}       # Tracks {user_id: attempts_count}
-pending_passwords = {}   # Tracks {prompt_message_id: user_id}
-
 # --- INITIALIZE DUAL CLIENTS ---
 bot = TelegramClient('bot_session', API_ID, API_HASH).start(bot_token=BOT_TOKEN)    # 1. The Bot (Interacts with you)
 userbot = TelegramClient('user_session', API_ID, API_HASH)                          # 2. The Userbot (Interacts with restricted channels)
 
 
 # --- HELPER FUNCTIONS ---
-def load_auth():
-    """Loads authorized users from JSON file."""
-    if not os.path.exists(AUTH_FILE): 
-        return {}
-    with open(AUTH_FILE, "r") as f: 
-        return json.load(f)
-
-
-def save_auth(data):
-    """Saves authorized users to JSON file."""
-    with open(AUTH_FILE, "w") as f: 
-        json.dump(data, f)
-
-
-def is_authorized(user_id):
-    """Checks if a user is currently authorized."""
-    auth_data = load_auth()
-    return auth_data.get(str(user_id), False)
-
-
 def format_bytes(size):
     power = 2**10
     n = 0
@@ -200,89 +175,33 @@ async def perform_download(status_msg, media_msg, folder_path, clean_name):
 # --- HANDLERS ---
 @bot.on(events.NewMessage(pattern=r'^/start$'))
 async def start_handler(event):
-    user_id = event.sender_id
-    
-    # 1. Reset auth state to False in the secure JSON file
-    auth_data = load_auth()
-    auth_data[str(user_id)] = False
-    save_auth(auth_data)
-    
-    # 2. Reset failed attempts
-    auth_attempts[user_id] = 0
-    
-    # 3. Prompt for password and track the message ID
-    msg = await event.reply("🔒 **Bot is locked.**\nPlease reply to THIS message with the password to unlock.")
-    pending_passwords[msg.id] = user_id
-
-
-@bot.on(events.NewMessage(func=lambda e: e.is_reply))
-async def password_handler(event):
-    reply_msg = await event.get_reply_message()
-    
-    # Check if this reply is specifically replying to our password prompt
-    if reply_msg.id not in pending_passwords:
-        return 
-        
-    user_id = event.sender_id
-    if pending_passwords[reply_msg.id] != user_id:
+    if event.sender_id not in ALLOWED_USERS:
         return
         
-    entered_password = event.text.strip()
+    welcome_text = """👋 **Welcome back, Rishabh! System is online and ready.**
+
+Here is your current command list:
+
+**Downloads:**
+`/mv` / `/mv2` - Reply to a file to download it to `/mnt/blue/movies` or `/mnt/media/movies`.
+`/tv` / `/tv2` - Reply to a file to download it to `/mnt/blue/tv` or `/mnt/media/tv`.
+
+**Restricted Links:**
+`/lmv <link>` / `/lmv2 <link>` - Fetch media from a restricted channel link to movies.
+`/ltv <link>` / `/ltv2 <link>` - Fetch media from a restricted channel link to TV.
+
+**Management:**
+`/list <mv|tv|mv2|tv2>` - Lists all folders (📁) and files (📄) in the specified directory.
+`/cancel` - Reply to an active download status or a pending deletion list to safely abort.
+`/del` - Reply to a "Download Complete" message, or a pending list, to permanently delete.
+`/del <mv|tv|mv2|tv2> <keyword1.keyword2>` - Search for items containing all dot-separated keywords; generates a list requiring a `/del` reply to confirm."""
+
+    await event.reply(welcome_text)
     
-    if entered_password == START_PASSWORD:
-        # --- SUCCESSFUL LOGIN ---
-        
-        # 1. Instantly delete the user's password message for both sides
-        try:
-            await event.delete() 
-        except Exception as e:
-            print(f"Could not delete password message: {e}")
-        
-        # 2. Update auth state to True in JSON
-        auth_data = load_auth()
-        auth_data[str(user_id)] = True
-        save_auth(auth_data)
-        
-        # 3. Cleanup session trackers
-        del pending_passwords[reply_msg.id]
-        if user_id in auth_attempts:
-            del auth_attempts[user_id]
-            
-        # 4. Send the command list
-        commands_text = """✅ **Access Granted! Welcome.**
-
-**Command List**
-`/mv` / `/mv2` - Reply to a file to download it to `/mnt/blue/movies` or `/mnt/media/movies` respectively.
-`/tv` / `/tv2` - Reply to a file to download it to `/mnt/blue/tv` or `/mnt/media/tv` respectively.
-`/lmv <link>` / `/lmv2 <link>` - Fetch media from a restricted channel link to the respective movies directory.
-`/ltv <link>` / `/ltv2 <link>` - Fetch media from a restricted channel link to the respective TV directory.
-`/list <mv|tv|mv2|tv2>` - Lists all folders (📁) and files (📄) in the specified directory target.
-`/cancel` - Reply to an active download status or a pending deletion list to safely abort the operation.
-`/del` - Reply to a "Download Complete" message, or a pending multi-keyword list, to permanently delete the files.
-`/del <mv|tv|mv2|tv2> <keyword1.keyword2>` - Searches for items containing all dot-separated keywords; generates a list requiring a `/del` reply to confirm."""
-        
-        await event.respond(commands_text)
-        
-    else:
-        # --- FAILED LOGIN ---
-        attempts = auth_attempts.get(user_id, 0) + 1
-        auth_attempts[user_id] = attempts
-        
-        if attempts >= 3:
-            # Max attempts reached, clear the prompt tracking
-            del pending_passwords[reply_msg.id]
-            del auth_attempts[user_id]
-            await event.reply("❌ **Max attempts reached.** The process has been reset. Send `/start` to try again.")
-        else:
-            # Re-prompt and update tracking
-            new_prompt = await event.reply(f"❌ **Incorrect password.** ({attempts}/3 attempts)\nPlease reply to THIS message with the correct password.")
-            del pending_passwords[reply_msg.id]
-            pending_passwords[new_prompt.id] = user_id
-
 
 @bot.on(events.NewMessage(pattern=r'^/cancel$'))
 async def cancel_handler(event):
-    if not is_authorized(event.sender_id):
+    if event.sender_id not in ALLOWED_USERS:
         return
     
     if not event.is_reply:
@@ -306,7 +225,7 @@ async def cancel_handler(event):
         
 @bot.on(events.NewMessage(pattern=r'^/del'))
 async def delete_handler(event):
-    if not is_authorized(event.sender_id):
+    if event.sender_id not in ALLOWED_USERS:
         return
     
     # --- SCENARIO 1: Replied to a message ---
@@ -398,7 +317,7 @@ async def delete_handler(event):
 
 @bot.on(events.NewMessage(pattern=r'^/list (mv|tv|mv2|tv2)$'))
 async def list_handler(event):
-    if not is_authorized(event.sender_id):
+    if event.sender_id not in ALLOWED_USERS:
         return
     
     cmd = event.text.strip().split()
@@ -439,7 +358,7 @@ async def list_handler(event):
 # 1. STANDARD HANDLER (/mv, /tv)
 @bot.on(events.NewMessage(pattern=r'^/(mv|tv|mv2|tv2)$'))
 async def standard_handler(event):
-    if not is_authorized(event.sender_id):
+    if event.sender_id not in ALLOWED_USERS:
         return
     
     if not event.is_reply: return await event.reply("❌ Reply to a file.")
@@ -472,7 +391,7 @@ async def link_handler(event):
     """
     Handles links by asking the Userbot to fetch the message.
     """
-    if not is_authorized(event.sender_id):
+    if event.sender_id not in ALLOWED_USERS:
         return
     
     text_split = event.text.strip().split(maxsplit=1)
