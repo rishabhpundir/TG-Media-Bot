@@ -3,18 +3,25 @@ import os
 import time
 import shlex
 import shutil
+import base64
 import asyncio
+
+import aiohttp
 from dotenv import load_dotenv
 from telethon import TelegramClient, events
 
 load_dotenv(override=True)
 
-# --- CONFIGURATION ---
+# --- Telegram Configuration ---
 API_ID = int(os.getenv("TELEGRAM_API_ID"))
 API_HASH = os.getenv("TELEGRAM_API_HASH")
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 ALLOWED_USERS_ = os.getenv("ALLOWED_USERS", "")
 ALLOWED_USERS = [int(x.strip()) for x in ALLOWED_USERS_.split(",") if x.strip()]
+
+# --- Aria2c RPC Configuration ---
+ARIA2_RPC_URL = os.getenv("ARIA2_RPC_URL", "http://localhost:6800/jsonrpc")
+ARIA2_RPC_SECRET = os.getenv("ARIA2_RPC_SECRET", "")
 
 # Directory Paths
 DIRECTORIES = {
@@ -98,6 +105,99 @@ async def progress_bar(current, total, event, start_time, last_update_time, file
         await event.edit(text)
     except:
         pass
+
+
+async def aria2_request(method, params=None):
+    """Sends an async JSON-RPC request to the Aria2c server."""
+    if params is None:
+        params = []
+        
+    # If a secret token is set, prepend it to the parameters
+    if ARIA2_RPC_SECRET:
+        params.insert(0, f"token:{ARIA2_RPC_SECRET}")
+
+    payload = {
+        "jsonrpc": "2.0",
+        "id": "tg_bot",
+        "method": f"aria2.{method}",
+        "params": params
+    }
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(ARIA2_RPC_URL, json=payload) as resp:
+                result = await resp.json()
+                if "error" in result:
+                    raise Exception(result["error"].get("message", "Unknown Aria2 Error"))
+                return result.get("result")
+    except Exception as e:
+        raise Exception(f"Aria2 Connection Error: {str(e)}")
+
+
+async def aria2_progress_tracker(gid, status_msg, filename):
+    """Tracks the live progress of an Aria2 download and updates the Telegram message."""
+    while True:
+        try:
+            status = await aria2_request("tellStatus", [gid])
+            
+            state = status.get("status")
+            total_length = int(status.get("totalLength", 0))
+            completed_length = int(status.get("completedLength", 0))
+            download_speed = int(status.get("downloadSpeed", 0))
+            upload_speed = int(status.get("uploadSpeed", 0))
+            connections = status.get("connections", "0")
+            seeders = status.get("numSeeders", "0")
+            dir_path = status.get("dir", "Unknown")
+
+            if state == "complete":
+                await status_msg.edit(
+                    f"✅ **Aria2 Download Complete!**\n"
+                    f"💾 **Size:** `{format_bytes(total_length)}`\n"
+                    f"📂 **Path:** `{dir_path}`\n"
+                    f"🏷️ **Name:** `{filename}`"
+                )
+                break
+            elif state in ["error", "removed"]:
+                error_msg = status.get("errorMessage", "Unknown error or cancelled.")
+                await status_msg.edit(f"❌ **Aria2 Download Failed/Cancelled:**\n`{error_msg}`")
+                break
+
+            # Calculate metrics
+            percentage = (completed_length * 100 / total_length) if total_length > 0 else 0
+            eta = (total_length - completed_length) / download_speed if download_speed > 0 else 0
+            
+            # Format progress bar
+            completed_blocks = int(percentage // 10)
+            progress_str = "🟦" * completed_blocks + "⬜" * (10 - completed_blocks)
+
+            # Check if it's a BitTorrent download to format the stats appropriately
+            is_torrent = "bittorrent" in status
+            
+            text = (
+                f"🌩️ **Aria2 Downloading:** `{filename}`\n"
+                f"{progress_str} **{percentage:.1f}%**\n"
+                f"💾 `{format_bytes(completed_length)} / {format_bytes(total_length)}`\n"
+                f"⬇️ `{format_bytes(download_speed)}/s` | ⬆️ `{format_bytes(upload_speed)}/s`\n"
+                f"⏳ **ETA:** `{int(eta)}s`\n"
+            )
+
+            # Conditionally add network stats
+            if is_torrent:
+                text += f"🔗 **Peers:** `{connections}` | 🌱 **Seeds:** `{seeders}`\n"
+            else:
+                text += f"🔌 **Connections:** `{connections}`\n"
+
+            text += (
+                f"📂 **Dest:** `{dir_path}`\n\n"
+                f"*(Manage via WebUI)*"
+            )
+            
+            await status_msg.edit(text)
+            await asyncio.sleep(5) # Update every 3 seconds to avoid Telegram rate limits
+            
+        except Exception as e:
+            print(f"Aria2 Tracker Error: {e}")
+            await asyncio.sleep(5) # Wait and retry if RPC temporarily drops
 
 
 # --- CORE WORKER LOGIC ---
@@ -189,6 +289,10 @@ Here is your current command list:
 `/lmv <link>` / `/lmv2 <link>` - Fetch restricted link -> Movies.
 `/ltv <link>` / `/ltv2 <link>` - Fetch restricted link -> TV.
 
+🧲 **Aria (`/aria`):**
+`/aria <mv|tv|mv2|tv2> <link>` - Send Magnet/Direct link to Aria2c.
+`/aria <mv|tv|mv2|tv2>` - Reply to a `.torrent` file to send to Aria2c.
+
 🗄️ **File Manager (`/fm`):**
 `/fm ls` - List base directories.
 `/fm ls <dir_key/path>` - View folder contents (e.g., `/fm ls tv/Breaking Bad`).
@@ -198,7 +302,8 @@ Here is your current command list:
 ⚙️ **Task Management:**
 `/cancel` - Reply to an active download or pending list to abort.
 `/del` - Reply to a "Download Complete" message to delete that file.
-`/del <mv|tv|mv2|tv2> <keyword1.keyword2>` - Search for and safely delete files matching keywords."""
+`/del <mv|tv|mv2|tv2> <keyword1.keyword2>` - Search for and safely delete files matching keywords.
+"""
 
     await event.reply(welcome_text)
 
@@ -351,6 +456,59 @@ async def fm_handler(event):
             
     else:
         await event.reply(f"❌ **Unknown operation:** `{cmd}`\nValid operations are `ls`, `rn`, and `rm`.")    
+
+
+@bot.on(events.NewMessage(pattern=r'^/aria (mv|tv|mv2|tv2)(?:\s+(.*))?$'))
+async def aria_handler(event):
+    if event.sender_id not in ALLOWED_USERS:
+        return
+
+    dir_key = f"/{event.pattern_match.group(1).lower()}"
+    target_dir = DIRECTORIES.get(dir_key)
+    link = event.pattern_match.group(2)
+    
+    is_reply = event.is_reply
+    reply_msg = await event.get_reply_message() if is_reply else None
+
+    # Determine the payload
+    gid = None
+    filename_display = "Unknown Task"
+
+    status_msg = await event.reply("🔄 Sending task to Aria2...")
+
+    try:
+        # SCENARIO 1: Replied to a .torrent file
+        if is_reply and reply_msg.media and reply_msg.file.ext == ".torrent":
+            await status_msg.edit("📥 Downloading .torrent file locally...")
+            torrent_path = await reply_msg.download_media()
+            
+            with open(torrent_path, "rb") as f:
+                b64_torrent = base64.b64encode(f.read()).decode("utf-8")
+                
+            os.remove(torrent_path) # Clean up local .torrent file
+            
+            filename_display = reply_msg.file.name
+            await status_msg.edit("🚀 Pushing torrent to Aria2...")
+            
+            # Send to Aria2 RPC
+            options = {"dir": target_dir}
+            gid = await aria2_request("addTorrent", [b64_torrent, [], options])
+
+        # SCENARIO 2: Provided a Magnet Link or Direct URL
+        elif link:
+            link = link.strip()
+            filename_display = "Magnet Link / URL Task"
+            options = {"dir": target_dir}
+            gid = await aria2_request("addUri", [[link], options])
+            
+        else:
+            return await status_msg.edit("❌ **Usage Error:** Provide a link or reply to a `.torrent` file.\nExample: `/aria mv <magnet_link>`")
+
+        # Start background tracker for this download
+        bot.loop.create_task(aria2_progress_tracker(gid, status_msg, filename_display))
+
+    except Exception as e:
+        await status_msg.edit(f"❌ **Aria2 Error:** `{str(e)}`\nMake sure the Aria2 service is running and configured correctly.")
 
 
 @bot.on(events.NewMessage(pattern=r'^/cancel$'))
