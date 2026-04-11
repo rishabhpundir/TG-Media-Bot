@@ -1,6 +1,7 @@
 import re
 import os
 import time
+import shlex
 import shutil
 import asyncio
 from dotenv import load_dotenv
@@ -192,6 +193,7 @@ Here is your current command list:
 
 **Management:**
 `/list <mv|tv|mv2|tv2>` - Lists all folders (📁) and files (📄) in the specified directory.
+`/rn "<path>" <new_name>` - Renames a file/folder (e.g., `/rn "/mnt/blue/tv/old.mkv" "new.mp4"`).
 `/cancel` - Reply to an active download status or a pending deletion list to safely abort.
 `/del` - Reply to a "Download Complete" message, or a pending list, to permanently delete.
 `/del <mv|tv|mv2|tv2> <keyword1.keyword2>` - Search for items containing all dot-separated keywords; generates a list requiring a `/del` reply to confirm."""
@@ -353,6 +355,45 @@ async def list_handler(event):
         if len(files) > 40: msg += f"*...and {len(files)-40} more.*\n"
         
     await event.reply(msg)
+
+
+@bot.on(events.NewMessage(pattern=r'^/rn "(.*?)" (.*?)$'))
+async def rename_handler(event):
+    if event.sender_id not in ALLOWED_USERS:
+        return
+        
+    old_path = event.pattern_match.group(1).strip()
+    new_name = event.pattern_match.group(2).strip()
+    
+    # Remove surrounding quotes from the new name if the user included them
+    if new_name.startswith('"') and new_name.endswith('"'):
+        new_name = new_name[1:-1]
+    
+    if not os.path.exists(old_path):
+        return await event.reply(f"❌ **Error:** Source path not found:\n`{old_path}`")
+        
+    # Security check: Ensure the file is inside ONE of the approved base directories
+    valid_base_dirs = list(set(DIRECTORIES.values())) # Get unique allowed paths
+    is_allowed = any(os.path.realpath(old_path).startswith(os.path.realpath(base)) for base in valid_base_dirs)
+    
+    if not is_allowed:
+        return await event.reply("⚠️ **Security Warning:** That path is outside of your allowed media directories. Renaming aborted.")
+        
+    new_path = os.path.join(os.path.dirname(old_path), new_name)
+    
+    if os.path.exists(new_path):
+        return await event.reply(f"❌ **Error:** A file or folder with the name `{new_name}` already exists in this location.")
+        
+    try:
+        os.rename(old_path, new_path)
+        await event.reply(
+            f"✅ **Successfully renamed!**\n\n"
+            f"📁 **From:** `{os.path.basename(old_path)}`\n"
+            f"🏷️ **To:** `{new_name}`\n"
+            f"📂 **Path:** `{new_path}`"
+        )
+    except Exception as e:
+        await event.reply(f"❌ **Failed to rename:** `{str(e)}`")
 
 
 # 1. STANDARD HANDLER (/mv, /tv)
