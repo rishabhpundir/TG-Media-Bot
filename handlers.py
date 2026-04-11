@@ -4,7 +4,10 @@ import time
 import shlex
 import shutil
 import base64
+import logging
 import traceback
+
+logger = logging.getLogger(__name__)
 
 from aria_core import aria2_request, aria2_progress_tracker
 from utils import format_bytes, sanitize_filename, ensure_mkv_extension
@@ -417,7 +420,7 @@ async def delete_handler(event):
                         os.remove(path)
                     deleted_count += 1
                 except Exception as e:
-                    print(f"Failed to delete {path}: {e}")
+                    logger.exception(f"Failed to delete {path}: {e}")
                     
             del pending_deletions[reply_msg.id] # Clean state
             return await event.reply(f"✅ **Successfully deleted {deleted_count} items.**")

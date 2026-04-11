@@ -1,5 +1,20 @@
+import sys
 import asyncio
+import logging
 from telethon import TelegramClient, events
+from logging.handlers import RotatingFileHandler
+
+# --- CONFIGURE LOGGING ---
+logging.basicConfig(
+    level=logging.INFO, # Change to logging.DEBUG for deeper troubleshooting
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    handlers=[
+        # Max file size of 5MB. Keeps exactly 1 older backup file.
+        RotatingFileHandler("tg_media_bot.log", maxBytes=5*1024*1024, backupCount=1, encoding="utf-8"), 
+        logging.StreamHandler(sys.stdout) # Prints to console
+    ]
+)
+logger = logging.getLogger(__name__)
 
 # Import our custom modules
 import config
@@ -32,18 +47,18 @@ def register_handlers():
 
 
 async def main():
-    print("Registering event handlers...")
+    logger.info("Registering event handlers...")
     register_handlers()
 
-    print("Starting Bot...")
+    logger.info("Starting Bot...")
     # Safely start the bot inside the async context
     await bot.start(bot_token=config.BOT_TOKEN)
     
-    print("Starting Userbot...")
+    logger.info("Starting Userbot...")
     # Safely start the userbot inside the async context
     await userbot.start()  
 
-    print("🚀 Dual-Client System Ready!")
+    logger.info("🚀 Dual-Client System Ready!")
 
     # Pass the initialized clients to the modules that need them 
     downloader.bot = bot

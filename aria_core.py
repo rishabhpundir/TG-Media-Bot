@@ -1,5 +1,8 @@
 import asyncio
 import aiohttp
+import logging
+
+logger = logging.getLogger(__name__)
 
 from utils import format_bytes
 from config import ARIA2_RPC_URL, ARIA2_RPC_SECRET
@@ -101,7 +104,7 @@ async def aria2_progress_tracker(gid, status_msg, filename):
             await asyncio.sleep(5)
             
         except Exception as e:
-            print(f"Aria2 Tracker Error: {e}")
+            logger.exception(f"Aria2 Tracker Error: {e}")
             error_count += 1
             if error_count >= 3:
                 try:
