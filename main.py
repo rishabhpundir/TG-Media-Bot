@@ -10,7 +10,7 @@ logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     handlers=[
         # Max file size of 5MB. Keeps exactly 1 older backup file.
-        RotatingFileHandler("tg_media_bot.log", maxBytes=5*1024*1024, backupCount=1, encoding="utf-8"), 
+        RotatingFileHandler("logs.log", maxBytes=5*1024*1024, backupCount=1, encoding="utf-8"), 
         logging.StreamHandler(sys.stdout) # Prints to console
     ]
 )
@@ -40,6 +40,7 @@ def register_handlers():
     # 🧲 Aria2c Management
     bot.add_event_handler(handlers.aria_handler, events.NewMessage(pattern=r'^/aria (mv|tv|mv2|tv2)(?:\s+(.*))?$'))
     bot.add_event_handler(handlers.aria_manage_handler, events.NewMessage(pattern=r'^/aria (list|start|stop|rm|del)$'))
+    bot.add_event_handler(handlers.aria_track_handler, events.NewMessage(pattern=r'^/aria\s+([a-fA-F0-9]{16})$'))
 
     # 📥 Standard & Link Downloads
     bot.add_event_handler(handlers.standard_handler, events.NewMessage(pattern=r'^/(mv|tv|mv2|tv2)$'))

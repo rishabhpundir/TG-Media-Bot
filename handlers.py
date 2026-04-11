@@ -5,6 +5,7 @@ import shlex
 import shutil
 import base64
 import logging
+import asyncio
 import traceback
 
 logger = logging.getLogger(__name__)
@@ -40,6 +41,7 @@ Here is your current command list:
 `/aria <mv|tv|mv2|tv2> <link>` - Send Magnet/Direct link to Aria2c.
 `/aria <mv|tv|mv2|tv2>` - Reply to a `.torrent` file to send to Aria2c.
 `/aria list` - Show all active, waiting, and stopped Aria2 downloads.
+`/aria <GID>` - Track the live status of a specific task.
 `/aria start|stop|rm|del` - Reply to an Aria2 status msg to manage it.
   *(rm = Remove task, del = Remove task + Delete Files)*
 
@@ -587,3 +589,30 @@ async def link_handler(event):
         await status.edit(f"❌ **Userbot Error:** `{str(e)}`\nMake sure your account has joined the channel.")
 
 
+async def aria_track_handler(event):
+    if event.sender_id not in ALLOWED_USERS:
+        return
+
+    gid = event.pattern_match.group(1)
+    status_msg = await event.reply(f"🔄 Fetching status for GID: `{gid}`...")
+
+    try:
+        # First, ping Aria2c to ensure the task exists and to extract its name
+        status = await aria2_request("tellStatus", [gid])
+        
+        filename_display = "Unknown Task"
+        if "bittorrent" in status and "info" in status["bittorrent"]:
+            filename_display = status["bittorrent"]["info"].get("name", filename_display)
+        elif status.get("files") and status["files"][0].get("path"):
+            filename_display = os.path.basename(status["files"][0]["path"])
+            
+        # Spawn the existing tracker! 
+        # It automatically handles looping if active, or breaks immediately if paused/completed
+        asyncio.create_task(aria2_progress_tracker(gid, status_msg, filename_display))
+
+    except Exception as e:
+        logger.exception(f"Aria2 Track Error for GID {gid}: {e}")
+        await status_msg.edit(f"❌ **Failed to fetch task:** `{gid}`\n`{str(e)}`")
+        
+        
+        
