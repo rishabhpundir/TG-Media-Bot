@@ -183,23 +183,175 @@ async def start_handler(event):
 
 Here is your current command list:
 
-**Downloads:**
-`/mv` / `/mv2` - Reply to a file to download it to `/mnt/blue/movies` or `/mnt/media/movies`.
-`/tv` / `/tv2` - Reply to a file to download it to `/mnt/blue/tv` or `/mnt/media/tv`.
+📥 **Downloads:**
+`/mv` / `/mv2` - Reply to file -> Save to Movies.
+`/tv` / `/tv2` - Reply to file -> Save to TV.
+`/lmv <link>` / `/lmv2 <link>` - Fetch restricted link -> Movies.
+`/ltv <link>` / `/ltv2 <link>` - Fetch restricted link -> TV.
 
-**Restricted Links:**
-`/lmv <link>` / `/lmv2 <link>` - Fetch media from a restricted channel link to movies.
-`/ltv <link>` / `/ltv2 <link>` - Fetch media from a restricted channel link to TV.
+🗄️ **File Manager (`/fm`):**
+`/fm ls` - List base directories.
+`/fm ls <dir_key/path>` - View folder contents (e.g., `/fm ls tv/Breaking Bad`).
+`/fm rn "<path>" "<new_name>"` - Rename a file/folder.
+`/fm rm "<path>"` - Instantly delete a file/folder.
 
-**Management:**
-`/list <mv|tv|mv2|tv2>` - Lists all folders (📁) and files (📄) in the specified directory.
-`/rn "<path>" <new_name>` - Renames a file/folder (e.g., `/rn "/mnt/blue/tv/old.mkv" "new.mp4"`).
-`/cancel` - Reply to an active download status or a pending deletion list to safely abort.
-`/del` - Reply to a "Download Complete" message, or a pending list, to permanently delete.
-`/del <mv|tv|mv2|tv2> <keyword1.keyword2>` - Search for items containing all dot-separated keywords; generates a list requiring a `/del` reply to confirm."""
+⚙️ **Task Management:**
+`/cancel` - Reply to an active download or pending list to abort.
+`/del` - Reply to a "Download Complete" message to delete that file.
+`/del <mv|tv|mv2|tv2> <keyword1.keyword2>` - Search for and safely delete files matching keywords."""
 
     await event.reply(welcome_text)
+
+
+@bot.on(events.NewMessage(pattern=r'^/fm(?:\s+(.*))?$'))
+async def fm_handler(event):
+    if event.sender_id not in ALLOWED_USERS:
+        return
+
+    args_str = event.pattern_match.group(1)
     
+    help_text = """🗄️ **File Manager (`/fm`)**
+**Usage:**
+`/fm ls` - List all base directories
+`/fm ls <dir_key or path>` - Traverse/list folder contents
+`/fm rn "<path>" "<new_name>"` - Rename a file or folder
+`/fm rm "<path>"` - Delete a file or folder
+
+*Tip: You can use directory keys as shortcuts! (e.g., `/fm ls mv/Breaking Bad`)*"""
+
+    if not args_str:
+        return await event.reply(help_text)
+
+    try:
+        # shlex safely splits arguments, respecting quoted strings with spaces
+        args = shlex.split(args_str)
+    except ValueError as e:
+        return await event.reply(f"❌ **Parse Error:** Check your quotes.\n`{str(e)}`")
+
+    if not args:
+        return await event.reply(help_text)
+
+    cmd = args[0].lower()
+    
+    # --- HELPER: Resolve Shortcut Paths ---
+    def resolve_path(path_str):
+        # Allow user to type 'mv/Folder' instead of '/mnt/blue/movies/Folder'
+        parts = path_str.replace('\\', '/').split('/', 1)
+        base_key = f"/{parts[0].lower()}"
+        
+        if base_key in DIRECTORIES:
+            base_path = DIRECTORIES[base_key]
+            if len(parts) > 1:
+                return os.path.join(base_path, parts[1])
+            return base_path
+        return path_str # Assume it's already an absolute path if no key matched
+
+    # --- HELPER: Security Verification ---
+    def is_path_allowed(path_to_check):
+        valid_base_dirs = list(set(DIRECTORIES.values()))
+        # realpath resolves any "../../" tricks to ensure they stay in media folders
+        real_path = os.path.realpath(path_to_check)
+        return any(real_path.startswith(os.path.realpath(base)) for base in valid_base_dirs)
+
+    # ==========================================
+    # OPERATION: ls (LIST / TRAVERSE)
+    # ==========================================
+    if cmd == 'ls':
+        if len(args) == 1:
+            msg = "📂 **Base Directories:**\n\n"
+            for key, path in DIRECTORIES.items():
+                if key in ['/lmv', '/ltv', '/lmv2', '/ltv2']: continue # Skip link aliases
+                msg += f"🔹 `{key[1:]}` ➡️ `{path}`\n"
+            return await event.reply(msg)
+            
+        target_path = resolve_path(args[1])
+        
+        if not is_path_allowed(target_path):
+            return await event.reply("⚠️ **Security Warning:** Path is outside allowed media directories.")
+            
+        if not os.path.exists(target_path):
+            return await event.reply(f"❌ **Not Found:** `{target_path}`")
+            
+        if not os.path.isdir(target_path):
+            size_str = format_bytes(os.path.getsize(target_path))
+            return await event.reply(f"📄 **File:** `{target_path}`\n💾 **Size:** `{size_str}`")
+            
+        try:
+            items = os.listdir(target_path)
+            if not items:
+                return await event.reply(f"📂 **{target_path}** is currently empty.")
+                
+            folders = sorted([i for i in items if os.path.isdir(os.path.join(target_path, i))])
+            files = sorted([i for i in items if os.path.isfile(os.path.join(target_path, i))])
+            
+            msg = f"📂 **Path:** `{target_path}`\n\n"
+            if folders:
+                msg += "**Folders:**\n"
+                for f in folders[:30]: msg += f"📁 `{f}`\n"
+                if len(folders) > 30: msg += f"*...and {len(folders)-30} more.*\n"
+                msg += "\n"
+            if files:
+                msg += "**Files:**\n"
+                for f in files[:40]: msg += f"📄 `{f}`\n"
+                if len(files) > 40: msg += f"*...and {len(files)-40} more.*\n"
+                
+            await event.reply(msg)
+        except Exception as e:
+            await event.reply(f"❌ **Error reading directory:** `{str(e)}`")
+
+    # ==========================================
+    # OPERATION: rn (RENAME)
+    # ==========================================
+    elif cmd == 'rn':
+        if len(args) < 3:
+            return await event.reply("❌ **Usage:** `/fm rn \"<path>\" \"<new_name>\"`")
+            
+        old_path = resolve_path(args[1])
+        new_name = args[2]
+        
+        if not is_path_allowed(old_path):
+             return await event.reply("⚠️ **Security Warning:** Path is outside allowed media directories.")
+             
+        if not os.path.exists(old_path):
+             return await event.reply(f"❌ **Not Found:** `{old_path}`")
+             
+        new_path = os.path.join(os.path.dirname(old_path), new_name)
+        if os.path.exists(new_path):
+            return await event.reply(f"❌ **Error:** Name `{new_name}` already exists in this location.")
+            
+        try:
+            os.rename(old_path, new_path)
+            await event.reply(f"✅ **Renamed!**\n📁 **From:** `{os.path.basename(old_path)}`\n🏷️ **To:** `{new_name}`\n📂 **New Path:** `{new_path}`")
+        except Exception as e:
+            await event.reply(f"❌ **Failed to rename:** `{str(e)}`")
+
+    # ==========================================
+    # OPERATION: rm (REMOVE / DELETE)
+    # ==========================================
+    elif cmd == 'rm':
+        if len(args) < 2:
+             return await event.reply("❌ **Usage:** `/fm rm \"<path>\"`")
+             
+        target_path = resolve_path(args[1])
+        
+        if not is_path_allowed(target_path):
+             return await event.reply("⚠️ **Security Warning:** Path is outside allowed media directories.")
+             
+        if not os.path.exists(target_path):
+             return await event.reply(f"❌ **Not Found:** `{target_path}`")
+             
+        try:
+            if os.path.isdir(target_path):
+                shutil.rmtree(target_path)
+            else:
+                os.remove(target_path)
+            await event.reply(f"🗑️ **Deleted:** `{target_path}`")
+        except Exception as e:
+            await event.reply(f"❌ **Failed to delete:** `{str(e)}`")
+            
+    else:
+        await event.reply(f"❌ **Unknown operation:** `{cmd}`\nValid operations are `ls`, `rn`, and `rm`.")    
+
 
 @bot.on(events.NewMessage(pattern=r'^/cancel$'))
 async def cancel_handler(event):
@@ -315,85 +467,6 @@ async def delete_handler(event):
             pending_deletions[sent_msg.id] = matched_paths # Save to state for confirmation
         else:
             await event.reply(f"⚠️ No matches found for all keywords `{raw_keywords}` in `{parts[1]}`.")
-
-
-@bot.on(events.NewMessage(pattern=r'^/list (mv|tv|mv2|tv2)$'))
-async def list_handler(event):
-    if event.sender_id not in ALLOWED_USERS:
-        return
-    
-    cmd = event.text.strip().split()
-    if len(cmd) < 2: return await event.reply("❌ Usage: `/list <dirname>`")
-        
-    dir_key = f"/{cmd[1].lower()}"
-    target_dir = DIRECTORIES.get(dir_key)
-    
-    if not os.path.exists(target_dir):
-        return await event.reply(f"❌ **Directory not found:** `{target_dir}`")
-        
-    items = os.listdir(target_dir)
-    if not items:
-        return await event.reply(f"📂 **{target_dir}** is currently empty.")
-        
-    # Sort and separate into folders and files
-    folders = sorted([i for i in items if os.path.isdir(os.path.join(target_dir, i))])
-    files = sorted([i for i in items if os.path.isfile(os.path.join(target_dir, i))])
-    
-    msg = f"📂 **Directory:** `{target_dir}`\n\n"
-    
-    if folders:
-        msg += "**Folders:**\n"
-        for f in folders[:20]:
-            msg += f"📁 `{f}`\n"
-        if len(folders) > 20: msg += f"*...and {len(folders)-20} more.*\n"
-        msg += "\n"
-        
-    if files:
-        msg += "**Files:**\n"
-        for f in files[:40]:
-            msg += f"📄 `{f}`\n"
-        if len(files) > 40: msg += f"*...and {len(files)-40} more.*\n"
-        
-    await event.reply(msg)
-
-
-@bot.on(events.NewMessage(pattern=r'^/rn "(.*?)" (.*?)$'))
-async def rename_handler(event):
-    if event.sender_id not in ALLOWED_USERS:
-        return
-        
-    old_path = event.pattern_match.group(1).strip()
-    new_name = event.pattern_match.group(2).strip()
-    
-    # Remove surrounding quotes from the new name if the user included them
-    if new_name.startswith('"') and new_name.endswith('"'):
-        new_name = new_name[1:-1]
-    
-    if not os.path.exists(old_path):
-        return await event.reply(f"❌ **Error:** Source path not found:\n`{old_path}`")
-        
-    # Security check: Ensure the file is inside ONE of the approved base directories
-    valid_base_dirs = list(set(DIRECTORIES.values())) # Get unique allowed paths
-    is_allowed = any(os.path.realpath(old_path).startswith(os.path.realpath(base)) for base in valid_base_dirs)
-    
-    if not is_allowed:
-        return await event.reply("⚠️ **Security Warning:** That path is outside of your allowed media directories. Renaming aborted.")
-        
-    new_path = os.path.join(os.path.dirname(old_path), new_name)
-    
-    if os.path.exists(new_path):
-        return await event.reply(f"❌ **Error:** A file or folder with the name `{new_name}` already exists in this location.")
-        
-    try:
-        os.rename(old_path, new_path)
-        await event.reply(
-            f"✅ **Successfully renamed!**\n\n"
-            f"📁 **From:** `{os.path.basename(old_path)}`\n"
-            f"🏷️ **To:** `{new_name}`\n"
-            f"📂 **Path:** `{new_path}`"
-        )
-    except Exception as e:
-        await event.reply(f"❌ **Failed to rename:** `{str(e)}`")
 
 
 # 1. STANDARD HANDLER (/mv, /tv)
