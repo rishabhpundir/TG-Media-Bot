@@ -75,8 +75,10 @@ def sanitize_filename(filename):
 
 
 def ensure_mkv_extension(filename):
-    """Ensures file ends in .mkv without duplication"""
-    if not filename.lower().endswith(".mkv"):
+    """Ensures file has an extension, defaulting to .mkv if none exists."""
+    _, ext = os.path.splitext(filename)
+    # Only append .mkv if there is absolutely no extension present
+    if not ext:
         filename += ".mkv"
     return filename
 
@@ -110,18 +112,18 @@ async def progress_bar(current, total, event, start_time, last_update_time, file
 
 async def aria2_request(method, params=None):
     """Sends an async JSON-RPC request to the Aria2c server."""
-    if params is None:
-        params = []
+    # Create a safe copy to prevent mutating list references
+    safe_params = list(params) if params else []
         
     # If a secret token is set, prepend it to the parameters
     if ARIA2_RPC_SECRET:
-        params.insert(0, f"token:{ARIA2_RPC_SECRET}")
+        safe_params.insert(0, f"token:{ARIA2_RPC_SECRET}")
 
     payload = {
         "jsonrpc": "2.0",
         "id": "tg_bot",
         "method": f"aria2.{method}",
-        "params": params
+        "params": safe_params
     }
 
     try:
@@ -137,9 +139,12 @@ async def aria2_request(method, params=None):
 
 async def aria2_progress_tracker(gid, status_msg, filename):
     """Tracks the live progress of an Aria2 download and updates the Telegram message."""
+    error_count = 0
+    
     while True:
         try:
             status = await aria2_request("tellStatus", [gid])
+            error_count = 0 # Reset error threshold on successful ping
             
             state = status.get("status")
             total_length = int(status.get("totalLength", 0))
@@ -163,6 +168,14 @@ async def aria2_progress_tracker(gid, status_msg, filename):
                 error_msg = status.get("errorMessage", "Unknown error or cancelled.")
                 await status_msg.edit(f"❌ **Aria2 Download Failed/Cancelled:**\n🆔 **GID:** `{gid}`\n`{error_msg}`")
                 break
+            elif state == "paused":
+                await status_msg.edit(
+                    f"⏸️ **Aria2 Task Paused**\n"
+                    f"🆔 **GID:** `{gid}`\n"
+                    f"🏷️ **Name:** `{filename}`\n\n"
+                    f"*(Reply with `/aria start` to resume, or check `/aria list`)*"
+                )
+                break # Safely exit the loop. The user can spawn a new tracker later if they want.
 
             # Calculate metrics
             percentage = (completed_length * 100 / total_length) if total_length > 0 else 0
@@ -194,6 +207,12 @@ async def aria2_progress_tracker(gid, status_msg, filename):
             
         except Exception as e:
             print(f"Aria2 Tracker Error: {e}")
+            error_count += 1
+            if error_count >= 3:
+                try:
+                    await status_msg.edit(f"⚠️ **Lost connection to Aria2c Tracker.**\n🆔 **GID:** `{gid}`\n*(Check `/aria list` to see if it's still running)*")
+                except: pass
+                break
             await asyncio.sleep(5)
 
 
