@@ -44,6 +44,7 @@ MAX_FILE_SIZE_BYTES = MAX_FILE_SIZE_GB * 1024 * 1024 * 1024
 queue = asyncio.Queue()
 active_downloads = {} 
 pending_deletions = {}
+pending_aria_actions = {}
 current_concurrent_count = 0
 
 # --- INITIALIZE DUAL CLIENTS ---
@@ -152,6 +153,7 @@ async def aria2_progress_tracker(gid, status_msg, filename):
             if state == "complete":
                 await status_msg.edit(
                     f"✅ **Aria2 Download Complete!**\n"
+                    f"🆔 **GID:** `{gid}`\n"
                     f"💾 **Size:** `{format_bytes(total_length)}`\n"
                     f"📂 **Path:** `{dir_path}`\n"
                     f"🏷️ **Name:** `{filename}`"
@@ -159,45 +161,40 @@ async def aria2_progress_tracker(gid, status_msg, filename):
                 break
             elif state in ["error", "removed"]:
                 error_msg = status.get("errorMessage", "Unknown error or cancelled.")
-                await status_msg.edit(f"❌ **Aria2 Download Failed/Cancelled:**\n`{error_msg}`")
+                await status_msg.edit(f"❌ **Aria2 Download Failed/Cancelled:**\n🆔 **GID:** `{gid}`\n`{error_msg}`")
                 break
 
             # Calculate metrics
             percentage = (completed_length * 100 / total_length) if total_length > 0 else 0
             eta = (total_length - completed_length) / download_speed if download_speed > 0 else 0
             
-            # Format progress bar
             completed_blocks = int(percentage // 10)
             progress_str = "🟦" * completed_blocks + "⬜" * (10 - completed_blocks)
 
-            # Check if it's a BitTorrent download to format the stats appropriately
             is_torrent = "bittorrent" in status
             
             text = (
                 f"🌩️ **Aria2 Downloading:** `{filename}`\n"
+                f"🆔 **GID:** `{gid}`\n"
                 f"{progress_str} **{percentage:.1f}%**\n"
                 f"💾 `{format_bytes(completed_length)} / {format_bytes(total_length)}`\n"
                 f"⬇️ `{format_bytes(download_speed)}/s` | ⬆️ `{format_bytes(upload_speed)}/s`\n"
                 f"⏳ **ETA:** `{int(eta)}s`\n"
             )
 
-            # Conditionally add network stats
             if is_torrent:
                 text += f"🔗 **Peers:** `{connections}` | 🌱 **Seeds:** `{seeders}`\n"
             else:
                 text += f"🔌 **Connections:** `{connections}`\n"
 
-            text += (
-                f"📂 **Dest:** `{dir_path}`\n\n"
-                f"*(Manage via WebUI)*"
-            )
+            text += f"📂 **Dest:** `{dir_path}`"
             
             await status_msg.edit(text)
-            await asyncio.sleep(5) # Update every 3 seconds to avoid Telegram rate limits
+            await asyncio.sleep(5)
             
         except Exception as e:
             print(f"Aria2 Tracker Error: {e}")
-            await asyncio.sleep(5) # Wait and retry if RPC temporarily drops
+            await asyncio.sleep(5)
 
 
 # --- CORE WORKER LOGIC ---
@@ -292,6 +289,9 @@ Here is your current command list:
 🧲 **Aria (`/aria`):**
 `/aria <mv|tv|mv2|tv2> <link>` - Send Magnet/Direct link to Aria2c.
 `/aria <mv|tv|mv2|tv2>` - Reply to a `.torrent` file to send to Aria2c.
+`/aria list` - Show all active, waiting, and stopped Aria2 downloads.
+`/aria start|stop|rm|del` - Reply to an Aria2 status msg to manage it.
+  *(rm = Remove task, del = Remove task + Delete Files)*
 
 🗄️ **File Manager (`/fm`):**
 `/fm ls` - List base directories.
@@ -511,6 +511,79 @@ async def aria_handler(event):
         await status_msg.edit(f"❌ **Aria2 Error:** `{str(e)}`\nMake sure the Aria2 service is running and configured correctly.")
 
 
+@bot.on(events.NewMessage(pattern=r'^/aria (list|start|stop|rm|del)$'))
+async def aria_manage_handler(event):
+    if event.sender_id not in ALLOWED_USERS:
+        return
+
+    cmd = event.pattern_match.group(1).lower()
+
+    # --- OPERATION: LIST ---
+    if cmd == 'list':
+        try:
+            active = await aria2_request("tellActive")
+            waiting = await aria2_request("tellWaiting", [0, 10])
+            stopped = await aria2_request("tellStopped", [0, 10])
+
+            msg = "📊 **Aria2c Downloads**\n\n"
+
+            def format_task(task, status_icon):
+                gid = task.get("gid")
+                name = "Unknown Metadata/Task"
+                if "bittorrent" in task and "info" in task["bittorrent"]:
+                    name = task["bittorrent"]["info"].get("name", name)
+                elif task.get("files") and task["files"][0].get("path"):
+                    name = os.path.basename(task["files"][0]["path"])
+                
+                total = int(task.get("totalLength", 0))
+                completed = int(task.get("completedLength", 0))
+                perc = (completed * 100 / total) if total > 0 else 0
+                return f"{status_icon} `{name}`\n🆔 **GID:** `{gid}`\n📊 `{perc:.1f}%` | 💾 `{format_bytes(completed)}/{format_bytes(total)}`\n\n"
+
+            msg += "**Active:**\n" + ("".join([format_task(t, "▶️") for t in active]) if active else "None\n\n")
+            msg += "**Waiting:**\n" + ("".join([format_task(t, "⏳") for t in waiting]) if waiting else "None\n\n")
+            msg += "**Stopped/Completed:**\n" + ("".join([format_task(t, "⏹️") for t in stopped]) if stopped else "None\n\n")
+            
+            if len(msg) > 4000: msg = msg[:4000] + "...\n*(Truncated)*"
+            await event.reply(msg)
+        except Exception as e:
+            await event.reply(f"❌ **Failed to fetch list:** `{e}`")
+        return
+
+    # --- OPERATION: START, STOP, RM, DEL ---
+    if not event.is_reply:
+        return await event.reply("❌ **Usage:** Reply to an Aria2 status message or an item from `/aria list`.")
+    
+    reply_msg = await event.get_reply_message()
+    match = re.search(r'GID:\*\* `([a-fA-F0-9]+)`', reply_msg.text)
+    if not match:
+        return await event.reply("❌ Could not find a valid **GID** in the replied message.")
+        
+    gid = match.group(1)
+
+    try:
+        if cmd == 'start':
+            await aria2_request("unpause", [gid])
+            await event.reply(f"▶️ **Resumed task:** `{gid}`")
+            
+        elif cmd == 'stop':
+            await aria2_request("forcePause", [gid])
+            await event.reply(f"⏸️ **Paused task:** `{gid}`")
+            
+        elif cmd in ['rm', 'del']:
+            action_type = "remove from Aria2c ONLY (Files kept)" if cmd == 'rm' else "remove from Aria2c AND DELETE all downloaded files permanently"
+            
+            sent_msg = await event.reply(
+                f"⚠️ **Confirmation Required**\n\n"
+                f"You are about to **{action_type}** for task:\n🆔 `{gid}`\n\n"
+                f"Reply to this message with `/del` to confirm, or `/cancel` to abort."
+            )
+            pending_aria_actions[sent_msg.id] = {"action": cmd, "gid": gid}
+
+    except Exception as e:
+        await event.reply(f"❌ **Action failed:** `{str(e)}`")
+
+
 @bot.on(events.NewMessage(pattern=r'^/cancel$'))
 async def cancel_handler(event):
     if event.sender_id not in ALLOWED_USERS:
@@ -531,6 +604,11 @@ async def cancel_handler(event):
     if reply_msg.id in pending_deletions:
         del pending_deletions[reply_msg.id]
         return await event.reply("🛑 Deletion Operation Cancelled!")
+    
+    # Check for pending Aria deletion confirmation
+    if reply_msg.id in pending_aria_actions:
+        del pending_aria_actions[reply_msg.id]
+        return await event.reply("🛑 Aria2 Deletion Cancelled!")
         
     await event.reply("⚠️ No active task or pending operation found.")
         
@@ -543,6 +621,47 @@ async def delete_handler(event):
     # --- SCENARIO 1: Replied to a message ---
     if event.is_reply:
         reply_msg = await event.get_reply_message()
+        
+    # Check if replied to a Pending Aria Action
+        if reply_msg.id in pending_aria_actions:
+            action_data = pending_aria_actions.pop(reply_msg.id)
+            action, gid = action_data["action"], action_data["gid"]
+            
+            try:
+                if action == 'del':
+                    # Extract files BEFORE removing the task
+                    files_info = []
+                    try: files_info = await aria2_request("getFiles", [gid])
+                    except: pass
+                        
+                    # 1. Force remove from Aria2 to release file locks
+                    try: await aria2_request("forceRemove", [gid])
+                    except: 
+                        try: await aria2_request("removeDownloadResult", [gid])
+                        except: pass
+
+                    # 2. Delete files from storage
+                    deleted_count = 0
+                    for f in files_info:
+                        path = f.get("path")
+                        if path and os.path.exists(path):
+                            try:
+                                os.remove(path)
+                                deleted_count += 1
+                                os.rmdir(os.path.dirname(path)) # Clean up parent dir if empty
+                            except: pass
+                            
+                    return await event.reply(f"🗑️ **Task Removed:** `{gid}`\n🧹 **Deleted {deleted_count} files/folders.**")
+                    
+                else: # rm logic
+                    try: await aria2_request("forceRemove", [gid])
+                    except: 
+                        try: await aria2_request("removeDownloadResult", [gid])
+                        except: pass
+                    return await event.reply(f"🗑️ **Task Removed:** `{gid}`\n*(Files were kept in storage)*")
+                    
+            except Exception as e:
+                return await event.reply(f"❌ **Failed to remove task:** `{str(e)}`")
         
         # Check if replied to a Pending Bulk Deletion List
         if reply_msg.id in pending_deletions:
