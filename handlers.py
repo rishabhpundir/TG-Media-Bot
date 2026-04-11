@@ -4,8 +4,8 @@ import time
 import shlex
 import shutil
 import base64
+import traceback
 
-from telethon import events
 from aria_core import aria2_request, aria2_progress_tracker
 from utils import format_bytes, sanitize_filename, ensure_mkv_extension
 from config import (DIRECTORIES, ALLOWED_USERS, MAX_FILE_SIZE_BYTES, 
@@ -291,7 +291,7 @@ async def aria_manage_handler(event):
             if len(msg) > 4000: msg = msg[:4000] + "...\n*(Truncated)*"
             await event.reply(msg)
         except Exception as e:
-            await event.reply(f"❌ **Failed to fetch list:** `{e}`")
+            await event.reply(f"❌ **Failed to fetch list:** `{e}`\n\n`{traceback.format_exc()}`")
         return
 
     # --- OPERATION: START, STOP, RM, DEL ---
