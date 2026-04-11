@@ -7,8 +7,8 @@ import downloader
 import handlers
 
 # --- INITIALIZE DUAL CLIENTS ---
-# We initialize them here at the top level so the event loop is created
-bot = TelegramClient('bot_session', config.API_ID, config.API_HASH).start(bot_token=config.BOT_TOKEN)
+# Define them here globally so they can be passed, but DO NOT start them yet.
+bot = TelegramClient('bot_session', config.API_ID, config.API_HASH)
 userbot = TelegramClient('user_session', config.API_ID, config.API_HASH)
 
 def register_handlers():
@@ -35,23 +35,24 @@ async def main():
     print("Registering event handlers...")
     register_handlers()
 
-    print("Starting Userbot...")
-    await userbot.start()  # Will prompt for phone/code on first run if session doesn't exist
-    
     print("Starting Bot...")
-    # Bot is already started via .start() at the top of the file
+    # Safely start the bot inside the async context
+    await bot.start(bot_token=config.BOT_TOKEN)
     
+    print("Starting Userbot...")
+    # Safely start the userbot inside the async context
+    await userbot.start()  
+
     print("🚀 Dual-Client System Ready!")
 
     # Pass the initialized clients to the modules that need them 
-    # (This keeps our modules decoupled and prevents circular imports)
     downloader.bot = bot
     downloader.userbot = userbot
     handlers.bot = bot
     handlers.userbot = userbot
 
-    # Start the background download queue worker
-    bot.loop.create_task(downloader.download_worker())
+    # Start the background download queue worker using modern asyncio syntax
+    asyncio.create_task(downloader.download_worker())
     
     # Run both clients simultaneously until you manually stop the script
     await asyncio.gather(
@@ -61,7 +62,8 @@ async def main():
 
 
 if __name__ == '__main__':
-    # Use the bot's native loop to run our main async function
-    bot.loop.run_until_complete(main())
+    # Modern, safe way to start an asyncio program in Python 3.10+
+    asyncio.run(main())
     
-
+    
+    

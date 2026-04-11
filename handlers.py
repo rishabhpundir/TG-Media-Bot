@@ -19,7 +19,6 @@ userbot = None
 
 
 # --- HANDLERS ---
-@bot.on(events.NewMessage(pattern=r'^/start$'))
 async def start_handler(event):
     if event.sender_id not in ALLOWED_USERS:
         return
@@ -56,7 +55,6 @@ Here is your current command list:
     await event.reply(welcome_text)
 
 
-@bot.on(events.NewMessage(pattern=r'^/fm(?:\s+(.*))?$'))
 async def fm_handler(event):
     if event.sender_id not in ALLOWED_USERS:
         return
@@ -206,7 +204,6 @@ async def fm_handler(event):
         await event.reply(f"❌ **Unknown operation:** `{cmd}`\nValid operations are `ls`, `rn`, and `rm`.")    
 
 
-@bot.on(events.NewMessage(pattern=r'^/aria (mv|tv|mv2|tv2)(?:\s+(.*))?$'))
 async def aria_handler(event):
     if event.sender_id not in ALLOWED_USERS:
         return
@@ -259,7 +256,6 @@ async def aria_handler(event):
         await status_msg.edit(f"❌ **Aria2 Error:** `{str(e)}`\nMake sure the Aria2 service is running and configured correctly.")
 
 
-@bot.on(events.NewMessage(pattern=r'^/aria (list|start|stop|rm|del)$'))
 async def aria_manage_handler(event):
     if event.sender_id not in ALLOWED_USERS:
         return
@@ -332,7 +328,6 @@ async def aria_manage_handler(event):
         await event.reply(f"❌ **Action failed:** `{str(e)}`")
 
 
-@bot.on(events.NewMessage(pattern=r'^/cancel$'))
 async def cancel_handler(event):
     if event.sender_id not in ALLOWED_USERS:
         return
@@ -361,7 +356,6 @@ async def cancel_handler(event):
     await event.reply("⚠️ No active task or pending operation found.")
         
         
-@bot.on(events.NewMessage(pattern=r'^/del'))
 async def delete_handler(event):
     if event.sender_id not in ALLOWED_USERS:
         return
@@ -495,7 +489,6 @@ async def delete_handler(event):
 
 
 # 1. STANDARD HANDLER (/mv, /tv)
-@bot.on(events.NewMessage(pattern=r'^/(mv|tv|mv2|tv2)$'))
 async def standard_handler(event):
     if event.sender_id not in ALLOWED_USERS:
         return
@@ -525,7 +518,6 @@ async def standard_handler(event):
 
 
 # 2. LINK HANDLER (/lmv, /ltv) (Fixed Regex & Logic)
-@bot.on(events.NewMessage(pattern=r'^/l(mv|tv|mv2|tv2)'))
 async def link_handler(event):
     """
     Handles links by asking the Userbot to fetch the message.
