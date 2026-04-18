@@ -33,6 +33,8 @@ def register_handlers():
     bot.add_event_handler(handlers.start_handler, events.NewMessage(pattern=r'^/start$'))
     bot.add_event_handler(handlers.cancel_handler, events.NewMessage(pattern=r'^/cancel$'))
     bot.add_event_handler(handlers.delete_handler, events.NewMessage(pattern=r'^/del'))
+    bot.add_event_handler(handlers.cls_handler, events.NewMessage(pattern=r'^/cls$'))
+    bot.add_event_handler(handlers.cmd_handler, events.NewMessage(pattern=r'^/cmd(?:\s+(.*))?$'))
 
     # 🗜️ Archive Management (NEW)
     bot.add_event_handler(handlers.unzip_handler, events.NewMessage(pattern=r'^/unzip(?:\s+(del))?(?:\s+(mv|tv|mv2|tv2)\s+(.+))?$'))

@@ -60,10 +60,12 @@ Here is your current command list:
 `/fm mov "<src>" "<dest>"` - Move a file/folder (e.g., `/fm mov "mv/File.mkv" "tv/Show/"`).
 `/fm rm "<path>"` - Instantly delete a file/folder (e.g., `/fm rm "tv/BadFile.mkv"`).
 
-⚙️ **Task Management:**
+⚙️ **Task Management & Misc:**
 `/cancel` - Reply to an active download or pending list to abort.
 `/del` - Reply to a "Download Complete" message to delete that file.
-`/del <mv|tv|mv2|tv2> <keyword1.keyword2>` - Search for and safely delete files matching keywords.
+`/del <mv|tv|mv2|tv2> <keyword1.keyword2>` - Search for and safely delete files.
+`/cls` - Clear all non-pinned messages in this chat.
+`/cmd <module>` - Get detailed help & examples (`tgdl`, `aria`, `unzip`, `fm`, `misc`).
 """
 
     await event.reply(welcome_text)
@@ -810,6 +812,84 @@ async def unzip_handler(event):
     except Exception as e:
         shutil.rmtree(extract_dir, ignore_errors=True)
         await status_msg.edit(f"❌ **Extraction failed:** `{str(e)}`")
+        
+
+async def cls_handler(event):
+    """Deletes all non-pinned messages in the current chat."""
+    if event.sender_id not in ALLOWED_USERS:
+        return
+        
+    status = await event.reply("🧹 **Sweeping chat...**")
+    message_ids = []
+    
+    try:
+        # Collect all message IDs that are not pinned and aren't the status message itself
+        async for msg in bot.iter_messages(event.chat_id):
+            if not msg.pinned and msg.id != status.id:
+                message_ids.append(msg.id)
+        
+        # Telegram allows bulk deletion. We chunk it in groups of 100 to be safe.
+        if message_ids:
+            for i in range(0, len(message_ids), 100):
+                await bot.delete_messages(event.chat_id, message_ids[i:i+100])
+                
+        await status.delete() # Clean up the status message finally
+    except Exception as e:
+        logger.exception("Error clearing messages")
+        await status.edit(f"❌ **Failed to clear chat:** `{str(e)}`")
+
+
+async def cmd_handler(event):
+    """Provides detailed command examples based on the requested module."""
+    if event.sender_id not in ALLOWED_USERS:
+        return
+        
+    module = event.pattern_match.group(1)
+    if not module:
+        return await event.reply("❌ **Usage:** `/cmd <module>`\nAvailable modules: `tgdl`, `aria`, `unzip`, `fm`, `misc`")
+        
+    module = module.strip().lower()
+    
+    help_texts = {
+        "tgdl": "📥 **Downloads (`tgdl`)**\n\n"
+                "`/mv` / `/mv2` - Save to Movies.\n*Example:* Reply to a `.mkv` file with `/mv`\n\n"
+                "`/tv` / `/tv2` - Save to TV.\n*Example:* Reply to a `.mp4` file with `/tv`\n\n"
+                "`/lmv <link>` / `/lmv2 <link>` - Fetch restricted link to Movies.\n*Example:* `/lmv https://t.me/c/123/456`\n\n"
+                "`/ltv <link>` / `/ltv2 <link>` - Fetch restricted link to TV.\n*Example:* `/ltv https://t.me/channel/123`",
+        
+        "aria": "🧲 **Aria (`aria`)**\n\n"
+                "`/aria <mv|tv|mv2|tv2> <link>` - Send link to Aria2c.\n*Example:* `/aria mv magnet:?xt=urn:btih:...`\n\n"
+                "`/aria <mv|tv|mv2|tv2>` - Send `.torrent` to Aria2c.\n*Example:* Reply to a `.torrent` file with `/aria tv`\n\n"
+                "`/aria list` - Show all downloads.\n*Example:* `/aria list`\n\n"
+                "`/aria <GID>` - Track specific status.\n*Example:* `/aria 1a2b3c4d5e6f7g8h`\n\n"
+                "`/aria start|stop|rm|del` - Manage task.\n*Example:* Reply to a tracking message with `/aria stop`",
+                
+        "unzip": "🗜️ **Archive Management (`unzip`)**\n\n"
+                 "`/unzip` - Extract archive in place.\n*Example:* Reply to completed download with `/unzip`\n\n"
+                 "`/unzip del` - Extract & delete original.\n*Example:* Reply to download with `/unzip del`\n\n"
+                 "`/unzip <dir> <keywords>` - Search & extract.\n*Example:* `/unzip mv inception.2010`\n\n"
+                 "`/unzip del <dir> <keywords>` - Search, extract & delete.\n*Example:* `/unzip del tv breaking.bad.s01`",
+                 
+        "fm": "🗄️ **File Manager (`fm`)**\n\n"
+              "`/fm ls` - List base directories.\n*Example:* `/fm ls`\n\n"
+              "`/fm ls <dir_key/path>` - View contents.\n*Example:* `/fm ls tv/Breaking Bad`\n\n"
+              "`/fm rn \"<path>\" \"<new_name>\"` - Rename file/folder.\n*Example:* `/fm rn \"tv/old.mkv\" \"new.mkv\"`\n\n"
+              "`/fm rn all \"<dir>\" \"<pattern>\"` - Bulk rename alphabetically.\n*Example:* `/fm rn all \"tv/Show\" \"S0{NUM:1} E0{NUM:7}.mkv\"`\n\n"
+              "`/fm mov \"<src>\" \"<dest>\"` - Move file/folder.\n*Example:* `/fm mov \"mv/File.mkv\" \"tv/Show/\"`\n\n"
+              "`/fm rm \"<path>\"` - Delete file/folder.\n*Example:* `/fm rm \"tv/BadFile.mkv\"`",
+              
+        "misc": "⚙️ **Miscellaneous (`misc`)**\n\n"
+                "`/cancel` - Abort active/pending task.\n*Example:* Reply to progress with `/cancel`\n\n"
+                "`/del` - Delete completed file.\n*Example:* Reply to completion with `/del`\n\n"
+                "`/del <dir> <keywords>` - Search & safely delete.\n*Example:* `/del mv sample.video`\n\n"
+                "`/cls` - Clear all non-pinned messages.\n*Example:* `/cls`\n\n"
+                "`/cmd <module>` - Show specific help.\n*Example:* `/cmd aria`"
+    }
+    
+    if module in help_texts:
+        await event.reply(help_texts[module])
+    else:
+        await event.reply(f"❌ **Unknown module:** `{module}`\nAvailable modules: `tgdl`, `aria`, `unzip`, `fm`, `misc`")
         
         
         
