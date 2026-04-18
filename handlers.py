@@ -53,10 +53,12 @@ Here is your current command list:
 `/unzip del <mv|tv|mv2|tv2> <keyword.keyword>` - Search, extract, and delete archive.
 
 🗄️ **File Manager (`/fm`):**
-`/fm ls` - List base directories.
+`/fm ls` - List base directories (e.g., `/fm ls`).
 `/fm ls <dir_key/path>` - View folder contents (e.g., `/fm ls tv/Breaking Bad`).
-`/fm rn "<path>" "<new_name>"` - Rename a file/folder.
-`/fm rm "<path>"` - Instantly delete a file/folder.
+`/fm rn "<path>" "<new_name>"` - Rename a file/folder (e.g., `/fm rn "tv/old.mkv" "new.mkv"`).
+`/fm rn all "<dir>" "<pattern>"` - Bulk rename alphabetically (e.g., `/fm rn all "tv/Show" "S0{NUM:1} E0{NUM:7}.mkv"`).
+`/fm mov "<src>" "<dest>"` - Move a file/folder (e.g., `/fm mov "mv/File.mkv" "tv/Show/"`).
+`/fm rm "<path>"` - Instantly delete a file/folder (e.g., `/fm rm "tv/BadFile.mkv"`).
 
 ⚙️ **Task Management:**
 `/cancel` - Reply to an active download or pending list to abort.
@@ -75,12 +77,14 @@ async def fm_handler(event):
     
     help_text = """🗄️ **File Manager (`/fm`)**
 **Usage:**
-`/fm ls` - List all base directories
-`/fm ls <dir_key or path>` - Traverse/list folder contents
-`/fm rn "<path>" "<new_name>"` - Rename a file or folder
-`/fm rm "<path>"` - Delete a file or folder
+`/fm ls` - List base directories (e.g., `/fm ls`)
+`/fm ls <dir>` - View folder contents (e.g., `/fm ls tv/Breaking Bad`)
+`/fm rn "<path>" "<new>"` - Rename a file/folder (e.g., `/fm rn "tv/Old.mkv" "New.mkv"`)
+`/fm rn all "<dir>" "<pattern>"` - Bulk rename alphabetically (e.g., `/fm rn all "tv/Show" "E{NUM:1}.mkv"`)
+`/fm mov "<src>" "<dest>"` - Move a file/folder (e.g., `/fm mov "mv/File.mkv" "tv/Show/"`)
+`/fm rm "<path>"` - Delete a file/folder (e.g., `/fm rm "tv/Bad.mkv"`)
 
-*Tip: You can use directory keys as shortcuts! (e.g., `/fm ls mv/Breaking Bad`)*"""
+*Tip: You can use directory keys as shortcuts!*"""
 
     if not args_str:
         return await event.reply(help_text)
@@ -166,6 +170,56 @@ async def fm_handler(event):
     # OPERATION: rn (RENAME)
     # ==========================================
     elif cmd == 'rn':
+        # --- BULK RENAME (rn all) ---
+        if len(args) > 1 and args[1].lower() == 'all':
+            if len(args) < 4:
+                return await event.reply("❌ **Usage:** `/fm rn all \"<dir>\" \"<pattern>\"`\nExample: `/fm rn all \"tv/Show\" \"Ep_{NUM:1}.mkv\"`")
+                
+            target_dir = resolve_path(args[2])
+            pattern = args[3]
+            
+            if not is_path_allowed(target_dir):
+                return await event.reply("⚠️ **Security Warning:** Path is outside allowed media directories.")
+                
+            if not os.path.isdir(target_dir):
+                return await event.reply(f"❌ **Not a directory:** `{target_dir}`")
+                
+            files = sorted([f for f in os.listdir(target_dir) if os.path.isfile(os.path.join(target_dir, f))])
+            if not files:
+                return await event.reply(f"⚠️ **Directory is empty:** `{target_dir}`")
+                
+            renamed_count = 0
+            errors = []
+            
+            for i, old_file in enumerate(files):
+                # Dynamically replace all {NUM:X} with (X + i)
+                def repl(match):
+                    start_val = int(match.group(1))
+                    return str(start_val + i)
+                    
+                new_filename = re.sub(r'\{NUM:(\d+)\}', repl, pattern)
+                
+                old_path = os.path.join(target_dir, old_file)
+                new_path = os.path.join(target_dir, new_filename)
+                
+                if os.path.exists(new_path) and old_path != new_path:
+                    errors.append(f"`{old_file}` -> Skipped (Name `{new_filename}` already exists)")
+                    continue
+                    
+                try:
+                    os.rename(old_path, new_path)
+                    renamed_count += 1
+                except Exception as e:
+                    errors.append(f"`{old_file}` -> Error: {str(e)}")
+                    
+            msg = f"✅ **Bulk Rename Complete!**\nSuccessfully renamed `{renamed_count}` out of `{len(files)}` files."
+            if errors:
+                msg += "\n\n⚠️ **Issues:**\n" + "\n".join(errors[:10])
+                if len(errors) > 10: msg += f"\n*...and {len(errors)-10} more.*"
+                
+            return await event.reply(msg)
+
+        # --- SINGLE RENAME ---
         if len(args) < 3:
             return await event.reply("❌ **Usage:** `/fm rn \"<path>\" \"<new_name>\"`")
             
@@ -191,6 +245,33 @@ async def fm_handler(event):
     # ==========================================
     # OPERATION: rm (REMOVE / DELETE)
     # ==========================================
+    # ==========================================
+    # OPERATION: mv (MOVE)
+    # ==========================================
+    elif cmd == 'mov':
+        if len(args) < 3:
+            return await event.reply("❌ **Usage:** `/fm mov \"<src_path>\" \"<dest_path>\"`")
+            
+        src_path = resolve_path(args[1])
+        dest_path = resolve_path(args[2])
+        
+        if not is_path_allowed(src_path) or not is_path_allowed(dest_path):
+             return await event.reply("⚠️ **Security Warning:** Path is outside allowed media directories.")
+             
+        if not os.path.exists(src_path):
+             return await event.reply(f"❌ **Not Found:** `{src_path}`")
+             
+        # Determine parent destination folder
+        parent_dest = os.path.dirname(dest_path) if not os.path.isdir(dest_path) else dest_path
+        if not os.path.exists(parent_dest):
+             return await event.reply(f"❌ **Destination parent folder does not exist:** `{parent_dest}`")
+             
+        try:
+            shutil.move(src_path, dest_path)
+            await event.reply(f"✅ **Moved!**\n📦 **From:** `{src_path}`\n🛬 **To:** `{dest_path}`")
+        except Exception as e:
+            await event.reply(f"❌ **Failed to move:** `{str(e)}`")
+            
     elif cmd == 'rm':
         if len(args) < 2:
              return await event.reply("❌ **Usage:** `/fm rm \"<path>\"`")
