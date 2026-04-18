@@ -54,6 +54,19 @@ async def aria2_progress_tracker(gid, status_msg, filename):
             dir_path = status.get("dir", "Unknown")
 
             if state == "complete":
+                followed_by = status.get("followedBy")
+                
+                # If a new task was spawned (e.g., Magnet metadata -> Actual Torrent)
+                if followed_by:
+                    gid = followed_by[0] # Update tracking ID to the new media task
+                    
+                    # Update filename from the completed metadata if available
+                    if "bittorrent" in status and "info" in status["bittorrent"]:
+                        filename = status["bittorrent"]["info"].get("name", filename)
+                        
+                    continue # Keep the tracker looping with the new GID
+                    
+                # Truly complete
                 await status_msg.edit(
                     f"✅ **Aria2 Download Complete!**\n"
                     f"🆔 **GID:** `{gid}`\n"
