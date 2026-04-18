@@ -815,7 +815,7 @@ async def unzip_handler(event):
         
 
 async def cls_handler(event):
-    """Deletes all non-pinned messages in the current chat."""
+    """Deletes all non-pinned messages in the current chat using the Userbot."""
     if event.sender_id not in ALLOWED_USERS:
         return
         
@@ -823,21 +823,36 @@ async def cls_handler(event):
     message_ids = []
     
     try:
-        # Collect all message IDs that are not pinned and aren't the status message itself
-        async for msg in bot.iter_messages(event.chat_id):
-            if not msg.pinned and msg.id != status.id:
+        # Determine the correct chat ID for the userbot to look at.
+        # If you are talking to the bot in a private chat, event.chat_id is YOUR user ID.
+        # But the userbot needs to look at its chat with the BOT.
+        target_chat = event.chat_id
+        if event.is_private:
+            bot_info = await bot.get_me()
+            target_chat = bot_info.id
+            
+        # Fetch history using the Userbot (which has full GetHistory access)
+        async for msg in userbot.iter_messages(target_chat):
+            if not msg.pinned:
                 message_ids.append(msg.id)
         
-        # Telegram allows bulk deletion. We chunk it in groups of 100 to be safe.
+        # Delete in chunks of 100 (Telegram API limit) using the Userbot
         if message_ids:
             for i in range(0, len(message_ids), 100):
-                await bot.delete_messages(event.chat_id, message_ids[i:i+100])
+                # revoke=True ensures the messages are deleted for both you and the bot
+                await userbot.delete_messages(target_chat, message_ids[i:i+100], revoke=True)
                 
-        await status.delete() # Clean up the status message finally
+        # (We don't need to manually delete the 'status' message because 
+        # the userbot will have already grabbed it in the history sweep and wiped it!)
+        
     except Exception as e:
         logger.exception("Error clearing messages")
-        await status.edit(f"❌ **Failed to clear chat:** `{str(e)}`")
-
+        try:
+            # Only try to edit the status if it somehow survived the sweep
+            await status.edit(f"❌ **Failed to clear chat:** `{str(e)}`")
+        except:
+            pass
+        
 
 async def cmd_handler(event):
     """Provides detailed command examples based on the requested module."""
