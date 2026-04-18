@@ -34,6 +34,9 @@ def register_handlers():
     bot.add_event_handler(handlers.cancel_handler, events.NewMessage(pattern=r'^/cancel$'))
     bot.add_event_handler(handlers.delete_handler, events.NewMessage(pattern=r'^/del'))
 
+    # 🗜️ Archive Management (NEW)
+    bot.add_event_handler(handlers.unzip_handler, events.NewMessage(pattern=r'^/unzip(?:\s+(del))?(?:\s+(mv|tv|mv2|tv2)\s+(.+))?$'))
+
     # 🗄️ File Manager
     bot.add_event_handler(handlers.fm_handler, events.NewMessage(pattern=r'^/fm(?:\s+(.*))?$'))
 

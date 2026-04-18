@@ -7,6 +7,7 @@ import base64
 import logging
 import asyncio
 import traceback
+import subprocess
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +45,12 @@ Here is your current command list:
 `/aria <GID>` - Track the live status of a specific task.
 `/aria start|stop|rm|del` - Reply to an Aria2 status msg to manage it.
   *(rm = Remove task, del = Remove task + Delete Files)*
+
+🗜️ **Archive Management (`/unzip`):**
+`/unzip` - Reply to a completed file message to extract it into a folder.
+`/unzip del` - Reply to a message to extract AND delete the original archive.
+`/unzip <mv|tv|mv2|tv2> <keyword1.keyword2>` - Search & extract a matching archive.
+`/unzip del <mv|tv|mv2|tv2> <keyword.keyword>` - Search, extract, and delete archive.
 
 🗄️ **File Manager (`/fm`):**
 `/fm ls` - List base directories.
@@ -613,6 +620,115 @@ async def aria_track_handler(event):
     except Exception as e:
         logger.exception(f"Aria2 Track Error for GID {gid}: {e}")
         await status_msg.edit(f"❌ **Failed to fetch task:** `{gid}`\n`{str(e)}`")
+        
+        
+async def unzip_handler(event):
+    if event.sender_id not in ALLOWED_USERS:
+        return
+
+    is_del = bool(event.pattern_match.group(1))
+    dir_key = event.pattern_match.group(2)
+    keywords_str = event.pattern_match.group(3)
+
+    filepath = None
+
+    # SCENARIO 1: Standalone keyword search (/unzip del mv keyword.here)
+    if dir_key and keywords_str:
+        target_dir = DIRECTORIES.get(f"/{dir_key.lower()}")
+        keywords = keywords_str.lower().split('.')
+
+        found_paths = []
+        for root, dirs, files in os.walk(target_dir):
+            for f in files:
+                if all(k in f.lower() for k in keywords):
+                    if f.lower().endswith(('.zip', '.rar', '.tar', '.gz', '.bz2', '.xz', '.7z')):
+                        found_paths.append(os.path.join(root, f))
+
+        if not found_paths:
+            return await event.reply(f"⚠️ No compressed files found matching `{keywords_str}` in `{dir_key}`.")
+
+        filepath = found_paths[0] # Act on the first match
+
+    # SCENARIO 2: Reply to a message
+    elif event.is_reply:
+        reply_msg = await event.get_reply_message()
+        
+        # Parse standard Aria and Downloader output layouts
+        path_match = re.search(r'📂 \*\*Path:\*\* `([^`]+)`', reply_msg.text)
+        name_match = re.search(r'🏷️ \*\*Name:\*\* `([^`]+)`', reply_msg.text)
+        alt_path_match = re.search(r'📂 \*\*Path:\*\* "(.*?)"', reply_msg.text)
+
+        if path_match and name_match:
+            filepath = os.path.join(path_match.group(1), name_match.group(1))
+        elif path_match:
+            filepath = path_match.group(1) 
+        elif alt_path_match:
+            filepath = alt_path_match.group(1)
+        else:
+            # Fallback: look for any absolute Linux path in the text
+            gen_match = re.search(r'(/[\w\.\-\/]+(?:zip|rar|tar|gz|bz2|xz|7z))', reply_msg.text, re.IGNORECASE)
+            if gen_match:
+                filepath = gen_match.group(1)
+
+        if not filepath or not os.path.exists(filepath):
+             return await event.reply("❌ Could not extract a valid, existing archive file path from the replied message.")
+    else:
+         return await event.reply("❌ **Usage:** Reply to a message with `/unzip [del]` or use `/unzip [del] <dir> <keywords>`")
+
+    if not os.path.isfile(filepath):
+         return await event.reply(f"❌ Target is not a file: `{filepath}`")
+
+    filename = os.path.basename(filepath)
+    status_msg = await event.reply(f"🔄 **Extracting:** `{filename}`...")
+
+    # Setup extraction directory (strips extension to create a folder with the same name)
+    extract_dir = os.path.splitext(filepath)[0] 
+    os.makedirs(extract_dir, exist_ok=True)
+
+    try:
+        # Try native Python extraction first (zip, tar, gzip, etc.)
+        try:
+            shutil.unpack_archive(filepath, extract_dir)
+        except shutil.ReadError:
+            # Fallback to system subprocess for formats Python natively misses (rar, 7z)
+            if filepath.lower().endswith('.rar'):
+                subprocess.run(['unrar', 'x', '-y', filepath, f"{extract_dir}/"], check=True, capture_output=True)
+            elif filepath.lower().endswith('.7z'):
+                subprocess.run(['7z', 'x', f'-o{extract_dir}', '-y', filepath], check=True, capture_output=True)
+            else:
+                raise Exception("Format not supported by standard Python tools or system fallback.")
+
+        # Extraction Successful -> Build the file list
+        extracted_files = []
+        for root, dirs, files in os.walk(extract_dir):
+            for f in files:
+                extracted_files.append(f)
+
+        file_list_str = "\n".join([f"📄 `{f}`" for f in extracted_files[:15]])
+        if len(extracted_files) > 15:
+            file_list_str += f"\n*...and {len(extracted_files) - 15} more.*"
+
+        success_text = f"✅ **Successfully Extracted!**\n📂 **Folder:** `{os.path.basename(extract_dir)}`\n\n**Contents:**\n{file_list_str}"
+
+        # Handle the 'del' flag
+        if is_del:
+            try:
+                os.remove(filepath)
+                success_text += f"\n\n🗑️ **Original archive deleted:** `{filename}`"
+            except Exception as del_err:
+                success_text += f"\n\n⚠️ **Warning:** Failed to delete original archive: `{str(del_err)}`"
+
+        await status_msg.edit(success_text)
+
+    except subprocess.CalledProcessError as sub_e:
+        # Clean up empty folder on fail
+        shutil.rmtree(extract_dir, ignore_errors=True) 
+        err_msg = sub_e.stderr.decode().strip() if sub_e.stderr else str(sub_e)
+        await status_msg.edit(f"❌ **Extraction failed (System Error):**\n`{err_msg}`\n\n*(Note: Make sure `unrar` and `p7zip-full` are installed on your Pi)*")
+        
+    except Exception as e:
+        shutil.rmtree(extract_dir, ignore_errors=True)
+        await status_msg.edit(f"❌ **Extraction failed:** `{str(e)}`")
         
         
         
