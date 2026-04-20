@@ -218,4 +218,5 @@ __marimo__/
 bot_session.session
 *.log
 logs/
-credentials.json
+*credentials*
+*token*
