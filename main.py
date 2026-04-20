@@ -18,8 +18,8 @@ logger = logging.getLogger(__name__)
 
 # Import our custom modules
 import config
-import downloader
-import handlers
+import core.downloader as downloader
+import core.handlers as handlers
 
 # --- INITIALIZE DUAL CLIENTS ---
 # Define them here globally so they can be passed, but DO NOT start them yet.

@@ -2,7 +2,7 @@ import os
 import time
 import asyncio
 
-from utils import format_bytes
+from core.utils import format_bytes
 from config import MAX_CONCURRENT_DOWNLOADS
 from state import queue, active_downloads, current_concurrent_count
 

@@ -11,8 +11,8 @@ import subprocess
 
 logger = logging.getLogger(__name__)
 
-from aria_core import aria2_request, aria2_progress_tracker
-from utils import format_bytes, sanitize_filename, ensure_mkv_extension
+from core.aria_core import aria2_request, aria2_progress_tracker
+from core.utils import format_bytes, sanitize_filename, ensure_mkv_extension
 from config import (DIRECTORIES, ALLOWED_USERS, MAX_FILE_SIZE_BYTES, 
                     MAX_FILE_SIZE_GB, MAX_CONCURRENT_DOWNLOADS)
 from state import (queue, active_downloads, pending_deletions, 

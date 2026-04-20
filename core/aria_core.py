@@ -4,7 +4,7 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-from utils import format_bytes
+from core.utils import format_bytes
 from config import ARIA2_RPC_URL, ARIA2_RPC_SECRET
 
 
