@@ -216,7 +216,7 @@ __marimo__/
 .streamlit/secrets.toml
 *session*
 bot_session.session
-*.log
+*log*
 logs/
 *credentials*
 *token*

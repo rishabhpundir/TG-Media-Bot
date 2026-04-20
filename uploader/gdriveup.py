@@ -1,42 +1,48 @@
 import os
 import sys
-from google.oauth2.credentials import Credentials
-from google_auth_oauthlib.flow import InstalledAppFlow
-from google.auth.transport.requests import Request
+
+from tqdm import tqdm
+from dotenv import load_dotenv
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
-from dotenv import load_dotenv
+from google.oauth2.credentials import Credentials
+from google.auth.transport.requests import Request
+from google_auth_oauthlib.flow import InstalledAppFlow
 
 load_dotenv()
 
-# Scope allows the script to view and manage files it creates
+SCRIPT_DIR = os.path.dirname(os.path.realpath(__file__))
+
+# Ensure it loads .env from the script's folder, not the current terminal folder
+load_dotenv(os.path.join(SCRIPT_DIR, '.env'))
+
 SCOPES = ['https://www.googleapis.com/auth/drive.file']
 
-# --- CONFIGURATION ---
 TARGET_DRIVE_FOLDER_ID = os.getenv('TARGET_DRIVE_FOLDER_ID')
 LIST_FILE_NAME = 'upload.txt'
-# ---------------------
+
+# Lock credentials to the script's directory
+TOKEN_PATH = os.path.join(SCRIPT_DIR, 'token.json')
+CREDS_PATH = os.path.join(SCRIPT_DIR, 'credentials.json')
 
 def authenticate():
     """Handles OAuth 2.0 authentication with Google Drive."""
     creds = None
-    # token.json stores the user's access and refresh tokens
-    if os.path.exists('token.json'):
-        creds = Credentials.from_authorized_user_file('token.json', SCOPES)
+    if os.path.exists(TOKEN_PATH):
+        creds = Credentials.from_authorized_user_file(TOKEN_PATH, SCOPES)
     
-    # If there are no (valid) credentials available, let the user log in.
     if not creds or not creds.valid:
         if creds and creds.expired and creds.refresh_token:
             creds.refresh(Request())
         else:
             flow = InstalledAppFlow.from_client_secrets_file(
-                'credentials.json', SCOPES)
+                CREDS_PATH, SCOPES)
             creds = flow.run_local_server(port=0)
-        # Save the credentials for the next run
-        with open('token.json', 'w') as token:
+        with open(TOKEN_PATH, 'w') as token:
             token.write(creds.to_json())
             
     return build('drive', 'v3', credentials=creds)
+
 
 def create_drive_folder(service, folder_name, parent_id):
     """Creates a folder in Google Drive and returns its ID."""
@@ -48,17 +54,31 @@ def create_drive_folder(service, folder_name, parent_id):
     folder = service.files().create(body=file_metadata, fields='id').execute()
     return folder.get('id')
 
+
 def upload_file(service, file_path, parent_id):
-    """Uploads a single file to a specific Google Drive folder."""
+    """Uploads a single file to a specific Google Drive folder with live progress."""
     file_name = os.path.basename(file_path)
     file_metadata = {'name': file_name, 'parents': [parent_id]}
+    file_size = os.path.getsize(file_path)
     
-    # resumable=True is highly recommended for larger files
-    media = MediaFileUpload(file_path, resumable=True)
+    # chunksize must be a multiple of 256KB. 10MB chunk used here for large files.
+    chunk_size = 10 * 1024 * 1024 
+    media = MediaFileUpload(file_path, chunksize=chunk_size, resumable=True)
     
-    print(f"Uploading file: {file_name}...")
-    file = service.files().create(body=file_metadata, media_body=media, fields='id').execute()
-    return file.get('id')
+    request = service.files().create(body=file_metadata, media_body=media, fields='id')
+    
+    response = None
+    
+    # Initialize tqdm progress bar (automatically handles speed, percentage, and size parsing)
+    with tqdm(total=file_size, unit='B', unit_scale=True, unit_divisor=1024, desc=f"Uploading: {file_name}") as pbar:
+        while response is None:
+            status, response = request.next_chunk()
+            if status:
+                # Update the progress bar to match the exact byte count uploaded so far
+                pbar.update(status.resumable_progress - pbar.n)
+                
+    return response.get('id')
+
 
 def upload_directory(service, dir_path, parent_id):
     """Recursively uploads a directory and its contents to Google Drive."""
@@ -75,6 +95,7 @@ def upload_directory(service, dir_path, parent_id):
             upload_file(service, item_path, drive_folder_id)
         elif os.path.isdir(item_path):
             upload_directory(service, item_path, drive_folder_id)
+
 
 def main():
     # 1. Validate command line arguments
@@ -115,6 +136,7 @@ def main():
             print(f"Warning: '{full_path}' does not exist on disk. Skipping.")
             
     print("\nUpload process complete!")
+
 
 if __name__ == '__main__':
     main()

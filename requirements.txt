@@ -33,6 +33,7 @@ requests==2.33.1
 requests-oauthlib==2.0.0
 rsa==4.9.1
 Telethon==1.42.0
+tqdm==4.67.3
 typing_extensions==4.15.0
 uritemplate==4.2.0
 urllib3==2.6.3
