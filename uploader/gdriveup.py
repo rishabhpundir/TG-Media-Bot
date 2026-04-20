@@ -11,7 +11,7 @@ from google_auth_oauthlib.flow import InstalledAppFlow
 
 load_dotenv()
 
-SCRIPT_DIR = os.path.dirname(os.path.realpath(__file__))
+SCRIPT_DIR = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
 
 # Ensure it loads .env from the script's folder, not the current terminal folder
 load_dotenv(os.path.join(SCRIPT_DIR, '.env'))
@@ -70,7 +70,8 @@ def upload_file(service, file_path, parent_id):
     response = None
     
     # Initialize tqdm progress bar (automatically handles speed, percentage, and size parsing)
-    with tqdm(total=file_size, unit='B', unit_scale=True, unit_divisor=1024, desc=f"Uploading: {file_name}") as pbar:
+    print(f"\nUploading: {file_name}")
+    with tqdm(total=file_size, unit='B', unit_scale=True, unit_divisor=1024) as pbar:
         while response is None:
             status, response = request.next_chunk()
             if status:
