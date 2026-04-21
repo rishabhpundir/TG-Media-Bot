@@ -44,8 +44,34 @@ def authenticate():
     return build('drive', 'v3', credentials=creds)
 
 
+def get_existing_item(service, name, parent_id, is_folder=False):
+    """Searches for an existing file or folder by name within a specific parent."""
+    # Escape single quotes to prevent Drive API query syntax errors
+    safe_name = name.replace("'", "\\'")
+    
+    mime_query = "mimeType='application/vnd.google-apps.folder'" if is_folder else "mimeType!='application/vnd.google-apps.folder'"
+    query = f"name='{safe_name}' and '{parent_id}' in parents and {mime_query} and trashed=false"
+    
+    response = service.files().list(
+        q=query,
+        spaces='drive',
+        fields='files(id, name)',
+        pageSize=1
+    ).execute()
+    
+    files = response.get('files', [])
+    if files:
+        return files[0].get('id')
+    return None
+
+
 def create_drive_folder(service, folder_name, parent_id):
-    """Creates a folder in Google Drive and returns its ID."""
+    """Creates a folder in Google Drive or returns the ID if it already exists."""
+    existing_folder_id = get_existing_item(service, folder_name, parent_id, is_folder=True)
+    if existing_folder_id:
+        # Silently use the existing folder without creating a duplicate
+        return existing_folder_id
+
     file_metadata = {
         'name': folder_name,
         'mimeType': 'application/vnd.google-apps.folder',
@@ -56,8 +82,15 @@ def create_drive_folder(service, folder_name, parent_id):
 
 
 def upload_file(service, file_path, parent_id):
-    """Uploads a single file to a specific Google Drive folder with live progress."""
+    """Uploads a single file to a specific Google Drive folder, skipping if it exists."""
     file_name = os.path.basename(file_path)
+    
+    # Check if file already exists in this specific Drive folder
+    existing_file_id = get_existing_item(service, file_name, parent_id, is_folder=False)
+    if existing_file_id:
+        print(f"Skipping: '{file_name}' (Already exists in Drive)")
+        return existing_file_id
+
     file_metadata = {'name': file_name, 'parents': [parent_id]}
     file_size = os.path.getsize(file_path)
     
@@ -69,7 +102,7 @@ def upload_file(service, file_path, parent_id):
     
     response = None
     
-    # Initialize tqdm progress bar (automatically handles speed, percentage, and size parsing)
+    # Initialize tqdm progress bar
     print(f"\nUploading: {file_name}")
     with tqdm(total=file_size, unit='B', unit_scale=True, unit_divisor=1024) as pbar:
         while response is None:
