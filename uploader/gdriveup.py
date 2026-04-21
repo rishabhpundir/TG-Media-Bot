@@ -175,8 +175,8 @@ def main():
 
     # 3. Read the target list
     with open(list_file_path, 'r') as f:
-        # Read lines, strip whitespace/newlines, and ignore empty lines
-        items = [line.strip() for line in f.readlines() if line.strip()]
+        # Read lines, strip whitespace, then strip single and double quotes, ignoring empty lines
+        items = [line.strip().strip("\"'") for line in f.readlines() if line.strip()]
 
     # 4. Process each item
     for item in items:
