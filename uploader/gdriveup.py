@@ -1,5 +1,8 @@
 import os
 import sys
+import time
+import socket
+import http.client
 
 from tqdm import tqdm
 from dotenv import load_dotenv
@@ -9,14 +12,13 @@ from google.oauth2.credentials import Credentials
 from google.auth.transport.requests import Request
 from google_auth_oauthlib.flow import InstalledAppFlow
 
-load_dotenv()
-
 SCRIPT_DIR = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
 
-# Ensure it loads .env from the script's folder, not the current terminal folder
+# Ensure it loads .env
 load_dotenv(os.path.join(SCRIPT_DIR, '.env'))
 
 SCOPES = ['https://www.googleapis.com/auth/drive.file']
+socket.setdefaulttimeout(300)
 
 TARGET_DRIVE_FOLDER_ID = os.getenv('TARGET_DRIVE_FOLDER_ID')
 LIST_FILE_NAME = 'upload.txt'
@@ -46,18 +48,18 @@ def authenticate():
 
 def get_existing_item(service, name, parent_id, is_folder=False):
     """Searches for an existing file or folder by name within a specific parent."""
-    # Escape single quotes to prevent Drive API query syntax errors
     safe_name = name.replace("'", "\\'")
     
     mime_query = "mimeType='application/vnd.google-apps.folder'" if is_folder else "mimeType!='application/vnd.google-apps.folder'"
     query = f"name='{safe_name}' and '{parent_id}' in parents and {mime_query} and trashed=false"
     
+    # ADD num_retries=5 HERE to protect the metadata query
     response = service.files().list(
         q=query,
         spaces='drive',
         fields='files(id, name)',
         pageSize=1
-    ).execute()
+    ).execute(num_retries=5) 
     
     files = response.get('files', [])
     if files:
@@ -69,7 +71,6 @@ def create_drive_folder(service, folder_name, parent_id):
     """Creates a folder in Google Drive or returns the ID if it already exists."""
     existing_folder_id = get_existing_item(service, folder_name, parent_id, is_folder=True)
     if existing_folder_id:
-        # Silently use the existing folder without creating a duplicate
         return existing_folder_id
 
     file_metadata = {
@@ -77,7 +78,13 @@ def create_drive_folder(service, folder_name, parent_id):
         'mimeType': 'application/vnd.google-apps.folder',
         'parents': [parent_id]
     }
-    folder = service.files().create(body=file_metadata, fields='id').execute()
+    
+    # ADD num_retries=5 HERE to protect the folder creation
+    folder = service.files().create(
+        body=file_metadata, 
+        fields='id'
+    ).execute(num_retries=5)
+    
     return folder.get('id')
 
 
@@ -104,12 +111,21 @@ def upload_file(service, file_path, parent_id):
     
     # Initialize tqdm progress bar
     print(f"\nUploading: {file_name}")
+    # Initialize tqdm progress bar (automatically handles speed, percentage, and size parsing)
     with tqdm(total=file_size, unit='B', unit_scale=True, unit_divisor=1024) as pbar:
         while response is None:
-            status, response = request.next_chunk()
-            if status:
-                # Update the progress bar to match the exact byte count uploaded so far
-                pbar.update(status.resumable_progress - pbar.n)
+            try:
+                # num_retries=5 tells the Google API library to handle standard 5xx server errors itself
+                status, response = request.next_chunk(num_retries=5)
+                if status:
+                    pbar.update(status.resumable_progress - pbar.n)
+                    
+            except (TimeoutError, socket.timeout, http.client.HTTPException) as e:
+                # Catches hard network drops that bypass Google's internal retry logic
+                # tqdm.write() prints the error safely without breaking the visual progress bar
+                tqdm.write(f"\nNetwork hiccup detected: {e}. Retrying chunk in 5 seconds...")
+                time.sleep(5)
+                # The loop continues, and request.next_chunk() will automatically re-attempt the failed chunk
                 
     return response.get('id')
 
@@ -132,6 +148,10 @@ def upload_directory(service, dir_path, parent_id):
 
 
 def main():
+    if not TARGET_DRIVE_FOLDER_ID:
+            print("Error: TARGET_DRIVE_FOLDER_ID is not set. Check your .env file.")
+            sys.exit(1)
+            
     # 1. Validate command line arguments
     if len(sys.argv) < 2:
         print("Usage: python script.py <base_directory>")
