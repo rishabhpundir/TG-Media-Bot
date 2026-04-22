@@ -1,3 +1,4 @@
+import os
 import sys
 import asyncio
 import logging
@@ -5,15 +6,20 @@ from telethon import TelegramClient, events
 from logging.handlers import RotatingFileHandler
 
 # --- CONFIGURE LOGGING ---
+LOG_DIR = os.path.join(os.path.dirname(os.path.realpath(__file__)), 'logs')
+os.makedirs(LOG_DIR, exist_ok=True)
+LOG_FILE = os.path.join(LOG_DIR, 'logs.log')
+
 logging.basicConfig(
     level=logging.INFO, # Change to logging.DEBUG for deeper troubleshooting
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     handlers=[
         # Max file size of 5MB. Keeps exactly 1 older backup file.
-        RotatingFileHandler("logs.log", maxBytes=5*1024*1024, backupCount=1, encoding="utf-8"), 
+        RotatingFileHandler(LOG_FILE, maxBytes=5*1024*1024, backupCount=1, encoding="utf-8"), 
         logging.StreamHandler(sys.stdout) # Prints to console
     ]
 )
+
 logger = logging.getLogger(__name__)
 
 # Import our custom modules
