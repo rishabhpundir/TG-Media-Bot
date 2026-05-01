@@ -200,7 +200,7 @@ def create_drive_folder(service, dir_path, parent_id):
     return folder_id
 
 
-def upload_file(service, file_path, parent_id):
+def upload_file(service, file_path, parent_id, progress_callback=None):
     """Uploads a single file to a specific Google Drive folder, skipping if it exists."""
     file_name = os.path.basename(file_path)
     
@@ -237,6 +237,8 @@ def upload_file(service, file_path, parent_id):
                 status, response = request.next_chunk(num_retries=5)
                 if status:
                     pbar.update(status.resumable_progress - pbar.n)
+                    if progress_callback:
+                        progress_callback(status.resumable_progress, file_size, file_name)
                     
             except (TimeoutError, socket.timeout, http.client.HTTPException) as e:
                 tqdm.write(f"\nNetwork hiccup detected: {e}. Retrying chunk in 5 seconds...")
@@ -249,25 +251,23 @@ def upload_file(service, file_path, parent_id):
     return file_id
 
 
-def upload_directory(service, dir_path, parent_id):
+def upload_directory(service, dir_path, parent_id, progress_callback=None):
     """Recursively uploads a directory and its contents to Google Drive."""
     dir_name = os.path.basename(dir_path)
     print(f"Creating/Checking Drive folder: {dir_name}...")
     logger.info(f"Processing directory: {dir_name}")
     
-    # Create the folder in Drive first (passing full dir_path for ledger tracking)
     drive_folder_id = create_drive_folder(service, dir_path, parent_id)
     
-    # Iterate through the local folder contents
     for item in os.listdir(dir_path):
         item_path = os.path.join(dir_path, item)
         if os.path.isfile(item_path):
-            upload_file(service, item_path, drive_folder_id)
+            upload_file(service, item_path, drive_folder_id, progress_callback)
         elif os.path.isdir(item_path):
-            upload_directory(service, item_path, drive_folder_id)
+            upload_directory(service, item_path, drive_folder_id, progress_callback)
 
 
-def upload_single_target(target_path):
+def upload_single_target(target_path, progress_callback=None):
     """Entry point for the Telegram bot to upload a specific file/folder."""
     global BASE_DIR
     
@@ -278,16 +278,15 @@ def upload_single_target(target_path):
     if not os.path.exists(target_path):
         raise Exception(f"Path does not exist on disk: {target_path}")
 
-    # Set BASE_DIR to the parent directory so the JSON ledger paths map correctly
     BASE_DIR = os.path.dirname(target_path)
     
     logger.info(f"Bot triggered Drive upload for: {target_path}")
     service = authenticate()
     
     if os.path.isfile(target_path):
-        upload_file(service, target_path, TARGET_DRIVE_FOLDER_ID)
+        upload_file(service, target_path, TARGET_DRIVE_FOLDER_ID, progress_callback)
     elif os.path.isdir(target_path):
-        upload_directory(service, target_path, TARGET_DRIVE_FOLDER_ID)
+        upload_directory(service, target_path, TARGET_DRIVE_FOLDER_ID, progress_callback)
 
 
 def main():

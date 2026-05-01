@@ -965,11 +965,56 @@ async def gd_handler(event):
         return await event.reply(f"❌ **File or Folder not found on disk:**\n`{filepath}`")
 
     target_name = os.path.basename(filepath)
-    status_msg = await event.reply(f"☁️ **Uploading to Google Drive:**\n`{target_name}`...\n\n*(Check `gdrive_log.log` for background progress)*")
+    status_msg = await event.reply(f"☁️ **Uploading to Google Drive:**\n`{target_name}`...\n\n*(Calculating...)*")
+
+    # --- NEW: Thread-safe Progress Tracking ---
+    last_update_time = [0]
+    start_time = [time.time()]
+    current_file_tracker = [""]
+
+    async def drive_progress_async(current, total, current_file_name):
+        elapsed_time = time.time() - start_time[0]
+        speed = current / elapsed_time if elapsed_time > 0 else 0
+        eta = (total - current) / speed if speed > 0 else 0
+        percentage = (current * 100) / total if total > 0 else 0
+        
+        completed_blocks = int(percentage // 10)
+        progress_str = "🟦" * completed_blocks + "⬜" * (10 - completed_blocks)
+        
+        text = (
+            f"☁️ **Uploading to Drive:** `{target_name}`\n"
+            f"📄 **Current File:** `{current_file_name}`\n"
+            f"{progress_str} **{percentage:.1f}%**\n"
+            f"💾 `{format_bytes(current)} / {format_bytes(total)}`\n"
+            f"🚀 `{format_bytes(speed)}/s` | ⏳ `{int(eta)}s`\n"
+        )
+        try:
+            await status_msg.edit(text)
+        except Exception:
+            pass # Ignore Telegram "Message is not modified" exceptions
+
+    def drive_progress_sync(current, total, current_file_name):
+        """Called by the background thread to schedule an update on the main loop."""
+        # Reset speed tracker if the script moves to the next file in a folder
+        if current_file_name != current_file_tracker[0]:
+            current_file_tracker[0] = current_file_name
+            start_time[0] = time.time()
+            
+        now = time.time()
+        # Throttle updates to every 3 seconds to prevent Telegram flood bans
+        if (now - last_update_time[0]) < 3 and current != total:
+            return
+        last_update_time[0] = now
+        
+        # Safely push the async edit back to the main Telegram event loop
+        asyncio.run_coroutine_threadsafe(
+            drive_progress_async(current, total, current_file_name),
+            bot.loop
+        )
 
     try:
-        # Run the blocking Google API upload in a background thread
-        await asyncio.to_thread(upload_single_target, filepath)
+        # Run the blocking Google API upload in a background thread, passing the callback
+        await asyncio.to_thread(upload_single_target, filepath, drive_progress_sync)
         
         await status_msg.edit(f"✅ **Google Drive Upload Complete!**\n☁️ **Uploaded:** `{target_name}`\n📂 **Source:** `{filepath}`")
     except Exception as e:
