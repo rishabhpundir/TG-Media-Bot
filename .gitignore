@@ -220,3 +220,4 @@ bot_session.session
 logs/
 *credentials*
 *token*
+*ledger*
