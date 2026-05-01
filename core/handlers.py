@@ -17,6 +17,7 @@ from config import (DIRECTORIES, ALLOWED_USERS, MAX_FILE_SIZE_BYTES,
                     MAX_FILE_SIZE_GB, MAX_CONCURRENT_DOWNLOADS)
 from state import (queue, active_downloads, pending_deletions, 
                    pending_aria_actions, current_concurrent_count)
+from uploader.gdriveup import upload_single_target
 
 
 bot = None
@@ -59,6 +60,10 @@ Here is your current command list:
 `/fm rn all "<dir>" "<pattern>"` - Bulk rename alphabetically (e.g., `/fm rn all "tv/Show" "S0{NUM:1} E0{NUM:7}.mkv"`).
 `/fm mov "<src>" "<dest>"` - Move a file/folder (e.g., `/fm mov "mv/File.mkv" "tv/Show/"`).
 `/fm rm "<path>"` - Instantly delete a file/folder (e.g., `/fm rm "tv/BadFile.mkv"`).
+
+☁️ **Google Drive Upload (`/gd`):**
+`/gd` - Reply to a completed download message to upload it.
+`/gd "<dir_key>/<name>"` - Directly upload a file/folder (e.g., `/gd "tv/Breaking Bad"`).
 
 ⚙️ **Task Management & Misc:**
 `/cancel` - Reply to an active download or pending list to abort.
@@ -907,4 +912,69 @@ async def cmd_handler(event):
         await event.reply(f"❌ **Unknown module:** `{module}`\nAvailable modules: `tgdl`, `aria`, `unzip`, `fm`, `misc`")
         
         
+async def gd_handler(event):
+    if event.sender_id not in ALLOWED_USERS:
+        return
+
+    args_str = event.pattern_match.group(1)
+    filepath = None
+
+    # --- HELPER: Resolve Shortcut Paths ---
+    def resolve_path(path_str):
+        parts = path_str.replace('\\', '/').split('/', 1)
+        base_key = f"/{parts[0].lower()}"
+        if base_key in DIRECTORIES:
+            base_path = DIRECTORIES[base_key]
+            if len(parts) > 1:
+                return os.path.join(base_path, parts[1])
+            return base_path
+        return path_str 
+
+    # SCENARIO 1: Standalone command with path (/gd "tv/Show Name")
+    if args_str:
+        try:
+            args = shlex.split(args_str)
+            if args:
+                filepath = resolve_path(args[0])
+        except ValueError as e:
+            return await event.reply(f"❌ **Parse Error:** Check your quotes.\n`{str(e)}`")
+
+    # SCENARIO 2: Reply to a completed download message
+    elif event.is_reply:
+        reply_msg = await event.get_reply_message()
+        
+        # This matches the output layout from Telegram, Links, Aria, and Unzip
+        path_match = re.search(r'📂 \*\*Path:\*\* `([^`]+)`', reply_msg.text)
+        name_match = re.search(r'🏷️ \*\*Name:\*\* `([^`]+)`', reply_msg.text)
+        alt_path_match = re.search(r'📂 \*\*Path:\*\* "(.*?)"', reply_msg.text)
+
+        if path_match and name_match:
+            filepath = os.path.join(path_match.group(1), name_match.group(1))
+        elif path_match:
+            filepath = path_match.group(1) 
+        elif alt_path_match:
+            filepath = alt_path_match.group(1)
+        else:
+            return await event.reply("❌ Could not extract a valid path from the replied message. Make sure it's a 'Download Complete' message.")
+            
+    else:
+        return await event.reply("❌ **Usage:** Reply to a completed download with `/gd` OR use `/gd \"<dir_key>/<file_or_folder_name>\"`")
+
+    # Verification & Execution
+    if not filepath or not os.path.exists(filepath):
+        return await event.reply(f"❌ **File or Folder not found on disk:**\n`{filepath}`")
+
+    target_name = os.path.basename(filepath)
+    status_msg = await event.reply(f"☁️ **Uploading to Google Drive:**\n`{target_name}`...\n\n*(Check `gdrive_log.log` for background progress)*")
+
+    try:
+        # Run the blocking Google API upload in a background thread
+        await asyncio.to_thread(upload_single_target, filepath)
+        
+        await status_msg.edit(f"✅ **Google Drive Upload Complete!**\n☁️ **Uploaded:** `{target_name}`\n📂 **Source:** `{filepath}`")
+    except Exception as e:
+        logger.exception(f"Google Drive Upload Error: {e}")
+        await status_msg.edit(f"❌ **Google Drive Upload Failed:**\n`{str(e)}`")
+        
+               
         

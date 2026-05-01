@@ -42,11 +42,14 @@ def register_handlers():
     bot.add_event_handler(handlers.cls_handler, events.NewMessage(pattern=r'^/cls$'))
     bot.add_event_handler(handlers.cmd_handler, events.NewMessage(pattern=r'^/cmd(?:\s+(.*))?$'))
 
-    # 🗜️ Archive Management (NEW)
+    # 🗜️ Archive Management
     bot.add_event_handler(handlers.unzip_handler, events.NewMessage(pattern=r'^/unzip(?:\s+(del))?(?:\s+(mv|tv|mv2|tv2)\s+(.+))?$'))
 
     # 🗄️ File Manager
     bot.add_event_handler(handlers.fm_handler, events.NewMessage(pattern=r'^/fm(?:\s+(.*))?$'))
+    
+    # ☁️ Google Drive Upload
+    bot.add_event_handler(handlers.gd_handler, events.NewMessage(pattern=r'^/gd(?:\s+(.*))?$'))
 
     # 🧲 Aria2c Management
     bot.add_event_handler(handlers.aria_handler, events.NewMessage(pattern=r'^/aria (mv|tv|mv2|tv2)(?:\s+(.*))?$'))

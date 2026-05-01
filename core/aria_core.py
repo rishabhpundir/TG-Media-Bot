@@ -1,3 +1,4 @@
+import os
 import asyncio
 import aiohttp
 import logging
@@ -65,28 +66,31 @@ async def aria2_progress_tracker(gid, status_msg, filename):
                         filename = status["bittorrent"]["info"].get("name", filename)
                         
                     continue # Keep the tracker looping with the new GID
-                    
-                # Truly complete
+                
+                # --- NEW PATH EXTRACTION LOGIC ---
+                download_dir = status.get("dir", "")
+                final_path = download_dir
+                
+                # Fetch files list from Aria2 status
+                files = status.get("files", [])
+                
+                # Check if it's a torrent with a specific folder/file name
+                bittorrent = status.get("bittorrent")
+                if bittorrent and "info" in bittorrent:
+                    target_name = bittorrent["info"].get("name", "")
+                    if target_name:
+                        final_path = os.path.join(download_dir, target_name)
+                # Fallback to the first file's path for direct links
+                elif files and files[0].get("path"):
+                    final_path = files[0]["path"]
+                
+                # --- EXACT FORMAT REQUIRED BY /gd AND /unzip ---
                 await status_msg.edit(
                     f"✅ **Aria2 Download Complete!**\n"
-                    f"🆔 **GID:** `{gid}`\n"
                     f"💾 **Size:** `{format_bytes(total_length)}`\n"
-                    f"📂 **Path:** `{dir_path}`\n"
-                    f"🏷️ **Name:** `{filename}`"
+                    f"📂 **Path:** \"{final_path}\""
                 )
                 break
-            elif state in ["error", "removed"]:
-                error_msg = status.get("errorMessage", "Unknown error or cancelled.")
-                await status_msg.edit(f"❌ **Aria2 Download Failed/Cancelled:**\n🆔 **GID:** `{gid}`\n`{error_msg}`")
-                break
-            elif state == "paused":
-                await status_msg.edit(
-                    f"⏸️ **Aria2 Task Paused**\n"
-                    f"🆔 **GID:** `{gid}`\n"
-                    f"🏷️ **Name:** `{filename}`\n\n"
-                    f"*(Reply with `/aria start` to resume, or check `/aria list`)*"
-                )
-                break # Safely exit the loop. The user can spawn a new tracker later if they want.
 
             # Calculate metrics
             percentage = (completed_length * 100 / total_length) if total_length > 0 else 0

@@ -267,6 +267,29 @@ def upload_directory(service, dir_path, parent_id):
             upload_directory(service, item_path, drive_folder_id)
 
 
+def upload_single_target(target_path):
+    """Entry point for the Telegram bot to upload a specific file/folder."""
+    global BASE_DIR
+    
+    if not TARGET_DRIVE_FOLDER_ID:
+        raise Exception("TARGET_DRIVE_FOLDER_ID is not set in .env")
+        
+    target_path = os.path.abspath(target_path)
+    if not os.path.exists(target_path):
+        raise Exception(f"Path does not exist on disk: {target_path}")
+
+    # Set BASE_DIR to the parent directory so the JSON ledger paths map correctly
+    BASE_DIR = os.path.dirname(target_path)
+    
+    logger.info(f"Bot triggered Drive upload for: {target_path}")
+    service = authenticate()
+    
+    if os.path.isfile(target_path):
+        upload_file(service, target_path, TARGET_DRIVE_FOLDER_ID)
+    elif os.path.isdir(target_path):
+        upload_directory(service, target_path, TARGET_DRIVE_FOLDER_ID)
+
+
 def main():
     global BASE_DIR
     
