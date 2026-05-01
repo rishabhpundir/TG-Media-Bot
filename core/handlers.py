@@ -971,6 +971,9 @@ async def gd_handler(event):
     last_update_time = [0]
     start_time = [time.time()]
     current_file_tracker = [""]
+    
+    # Explicitly grab the main thread's asyncio loop before entering the background thread
+    main_loop = asyncio.get_running_loop()
 
     async def drive_progress_async(current, total, current_file_name):
         elapsed_time = time.time() - start_time[0]
@@ -1006,10 +1009,10 @@ async def gd_handler(event):
             return
         last_update_time[0] = now
         
-        # Safely push the async edit back to the main Telegram event loop
+        # Safely push the async edit back to the explicit main loop we captured earlier
         asyncio.run_coroutine_threadsafe(
             drive_progress_async(current, total, current_file_name),
-            bot.loop
+            main_loop 
         )
 
     try:
