@@ -200,7 +200,7 @@ def create_drive_folder(service, dir_path, parent_id):
     return folder_id
 
 
-def upload_file(service, file_path, parent_id, progress_callback=None):
+def upload_file(service, file_path, parent_id, progress_callback=None, cancel_flag=None):
     """Uploads a single file to a specific Google Drive folder, skipping if it exists."""
     file_name = os.path.basename(file_path)
     
@@ -233,6 +233,11 @@ def upload_file(service, file_path, parent_id, progress_callback=None):
     logger.info(f"Started uploading: {file_name} ({file_size} bytes)")
     with tqdm(total=file_size, unit='B', unit_scale=True, unit_divisor=1024) as pbar:
         while response is None:
+            # --- CHECK CANCELLATION FLAG BEFORE NEXT CHUNK ---
+            if cancel_flag and cancel_flag.get("cancelled"):
+                logger.info(f"Upload forcibly aborted via cancel flag: {file_name}")
+                raise Exception("Upload Cancelled")
+                
             try:
                 status, response = request.next_chunk(num_retries=5)
                 if status:
@@ -251,8 +256,11 @@ def upload_file(service, file_path, parent_id, progress_callback=None):
     return file_id
 
 
-def upload_directory(service, dir_path, parent_id, progress_callback=None):
+def upload_directory(service, dir_path, parent_id, progress_callback=None, cancel_flag=None):
     """Recursively uploads a directory and its contents to Google Drive."""
+    if cancel_flag and cancel_flag.get("cancelled"):
+        raise Exception("Upload Cancelled")
+        
     dir_name = os.path.basename(dir_path)
     print(f"Creating/Checking Drive folder: {dir_name}...")
     logger.info(f"Processing directory: {dir_name}")
@@ -260,14 +268,17 @@ def upload_directory(service, dir_path, parent_id, progress_callback=None):
     drive_folder_id = create_drive_folder(service, dir_path, parent_id)
     
     for item in os.listdir(dir_path):
+        if cancel_flag and cancel_flag.get("cancelled"):
+            raise Exception("Upload Cancelled")
+            
         item_path = os.path.join(dir_path, item)
         if os.path.isfile(item_path):
-            upload_file(service, item_path, drive_folder_id, progress_callback)
+            upload_file(service, item_path, drive_folder_id, progress_callback, cancel_flag)
         elif os.path.isdir(item_path):
-            upload_directory(service, item_path, drive_folder_id, progress_callback)
+            upload_directory(service, item_path, drive_folder_id, progress_callback, cancel_flag)
 
 
-def upload_single_target(target_path, progress_callback=None):
+def upload_single_target(target_path, progress_callback=None, cancel_flag=None):
     """Entry point for the Telegram bot to upload a specific file/folder."""
     global BASE_DIR
     
@@ -284,9 +295,9 @@ def upload_single_target(target_path, progress_callback=None):
     service = authenticate()
     
     if os.path.isfile(target_path):
-        upload_file(service, target_path, TARGET_DRIVE_FOLDER_ID, progress_callback)
+        upload_file(service, target_path, TARGET_DRIVE_FOLDER_ID, progress_callback, cancel_flag)
     elif os.path.isdir(target_path):
-        upload_directory(service, target_path, TARGET_DRIVE_FOLDER_ID, progress_callback)
+        upload_directory(service, target_path, TARGET_DRIVE_FOLDER_ID, progress_callback, cancel_flag)
 
 
 def main():

@@ -22,6 +22,7 @@ from uploader.gdriveup import upload_single_target
 
 bot = None
 userbot = None
+active_gd_uploads = {}
 
 
 # --- HANDLERS ---
@@ -442,6 +443,11 @@ async def cancel_handler(event):
     if task:
         task.cancel()
         return await event.reply("🛑 Task Cancelled!")
+        
+    # Check for active Google Drive upload
+    if reply_msg.id in active_gd_uploads:
+        active_gd_uploads[reply_msg.id]["cancelled"] = True
+        return await event.reply("🛑 Signalling Drive Upload to abort...")
         
     # Check for pending deletion confirmation
     if reply_msg.id in pending_deletions:
@@ -1015,14 +1021,27 @@ async def gd_handler(event):
             main_loop 
         )
 
+    # --- Register State for Cancellation ---
+    global active_gd_uploads
+    cancel_flag = {"cancelled": False}
+    active_gd_uploads[status_msg.id] = cancel_flag
+
     try:
-        # Run the blocking Google API upload in a background thread, passing the callback
-        await asyncio.to_thread(upload_single_target, filepath, drive_progress_sync)
+        # Run the blocking Google API upload in a background thread, passing callback AND flag
+        await asyncio.to_thread(upload_single_target, filepath, drive_progress_sync, cancel_flag)
         
         await status_msg.edit(f"✅ **Google Drive Upload Complete!**\n☁️ **Uploaded:** `{target_name}`\n📂 **Source:** `{filepath}`")
     except Exception as e:
-        logger.exception(f"Google Drive Upload Error: {e}")
-        await status_msg.edit(f"❌ **Google Drive Upload Failed:**\n`{str(e)}`")
+        if cancel_flag.get("cancelled"):
+            await status_msg.edit(f"🛑 **Google Drive Upload Cancelled:**\n`{target_name}`")
+            logger.info(f"Google Drive upload cancelled by user: {target_name}")
+        else:
+            logger.exception(f"Google Drive Upload Error: {e}")
+            await status_msg.edit(f"❌ **Google Drive Upload Failed:**\n`{str(e)}`")
+    finally:
+        # Clean up the state tracker
+        if status_msg.id in active_gd_uploads:
+            del active_gd_uploads[status_msg.id]
         
                
         
