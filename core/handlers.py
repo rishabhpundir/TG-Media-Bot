@@ -1135,19 +1135,51 @@ async def ytdl_handler(event):
         return await event.reply("❌ **Provide a URL or reply to a manifest file.**")
 
     channel_id = int(os.getenv("YTDL_CHANNEL_ID", "0"))
-    
+    main_loop = asyncio.get_running_loop()
+
     # Process the queue
     for i, (v_url, v_title, v_start, v_end) in enumerate(videos_to_process):
         success = False
         final_path = None
         safe_title = None
         
+        # --- Download Progress Callback ---
+        last_dl_update = [0]
+        
+        async def dl_progress_async(downloaded, total, speed, eta):
+            now = time.time()
+            if (now - last_dl_update[0]) < 3 and downloaded != total:
+                return
+            last_dl_update[0] = now
+            
+            # M3U8 streams sometimes hide total size until finished
+            pct = (downloaded * 100) / total if total > 0 else 0
+            blocks = int(pct // 10)
+            prog_str = "🟦" * blocks + "⬜" * (10 - blocks)
+            total_str = format_bytes(total) if total > 0 else "Unknown"
+            
+            try:
+                await status_msg.edit(
+                    f"📥 **Downloading ({i+1}/{len(videos_to_process)}):**\n`{v_title or v_url}`\n"
+                    f"{prog_str} **{pct:.1f}%**\n"
+                    f"💾 `{format_bytes(downloaded)} / {total_str}`\n"
+                    f"⬇️ `{format_bytes(speed or 0)}/s` | ⏳ `{int(eta or 0)}s`"
+                )
+            except Exception:
+                pass
+
+        def dl_progress_sync(downloaded, total, speed, eta):
+            asyncio.run_coroutine_threadsafe(
+                dl_progress_async(downloaded, total, speed, eta),
+                main_loop
+            )
+
         # 3-Attempt Retry Logic
         for attempt in range(3):
             try:
-                await status_msg.edit(f"📥 **Downloading ({i+1}/{len(videos_to_process)}):**\n`{v_title or v_url}`\n*(Attempt {attempt+1}/3)*")
+                await status_msg.edit(f"📥 **Initializing Download ({i+1}/{len(videos_to_process)}):**\n`{v_title or v_url}`\n*(Attempt {attempt+1}/3)*")
                 final_path, safe_title = await asyncio.to_thread(
-                    ytdl.download_and_process_sync, v_url, v_title, v_start, v_end, dest_dir
+                    ytdl.download_and_process_sync, v_url, v_title, v_start, v_end, dest_dir, dl_progress_sync
                 )
                 success = True
                 break
@@ -1164,13 +1196,13 @@ async def ytdl_handler(event):
         # Handle Telegram Upload Mode
         if tg_mode:
             start_time = [time.time()]
-            last_update_time = [0]
+            last_up_time = [0]
             
             async def upload_progress(current, total):
                 now = time.time()
-                if (now - last_update_time[0]) < 3 and current != total:
+                if (now - last_up_time[0]) < 3 and current != total:
                     return
-                last_update_time[0] = now
+                last_up_time[0] = now
                 elapsed = now - start_time[0]
                 speed = current / elapsed if elapsed > 0 else 0
                 eta = (total - current) / speed if speed > 0 else 0
@@ -1192,6 +1224,7 @@ async def ytdl_handler(event):
                 w, h, d = await asyncio.to_thread(ytdl.get_video_metadata, final_path)
                 thumb_path = await asyncio.to_thread(ytdl.generate_thumbnail, final_path)
                 
+                logger.info(f"YTDL Uploading to Channel: {final_path}")
                 await bot.send_file(
                     channel_id,
                     file=final_path,
@@ -1206,6 +1239,7 @@ async def ytdl_handler(event):
                     os.remove(thumb_path)
                     
                 await status_msg.edit(f"✅ **YTDL Task Complete & Uploaded!**\n💾 `{file_size_str}`\n📂 `{final_path}`")
+                logger.info(f"YTDL Upload Success: {final_path}")
             except Exception as e:
                 logger.exception(f"Telegram Upload Error: {e}")
                 await status_msg.edit(f"⚠️ **Downloaded, but TG Upload Failed:**\n`{e}`\n📂 `{final_path}`")
