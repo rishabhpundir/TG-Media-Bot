@@ -2,8 +2,11 @@ import os
 import sys
 import asyncio
 import logging
+
 from telethon import TelegramClient, events
 from logging.handlers import RotatingFileHandler
+from telethon.tl.functions.bots import SetBotCommandsRequest
+from telethon.tl.types import BotCommand, BotCommandScopeDefault
 
 # --- CONFIGURE LOGGING ---
 LOG_DIR = os.path.join(os.path.dirname(os.path.realpath(__file__)), 'logs')
@@ -72,6 +75,26 @@ async def main():
     # Safely start the bot inside the async context
     await bot.start(bot_token=config.BOT_TOKEN)
     
+    # Configure Bot UI Menu Commands
+    logger.info("Configuring Bot UI Commands...")
+    try:
+        await bot(SetBotCommandsRequest(
+            scope=BotCommandScopeDefault(),
+            lang_code='',
+            commands=[
+                BotCommand(command="start", description="Show main menu & status"),
+                BotCommand(command="cmd", description="View detailed help (e.g. /cmd dl)"),
+                BotCommand(command="cancel", description="Abort an active task"),
+                BotCommand(command="del", description="Delete files (reply or search)"),
+                BotCommand(command="fm", description="File manager (ls, rn, mov, rm)"),
+                BotCommand(command="gd", description="Upload to Google Drive"),
+                BotCommand(command="aria", description="Aria2 Magnet/Torrent Downloader"),
+                BotCommand(command="ytdl", description="Download video streams/links")
+            ]
+        ))
+    except Exception as e:
+        logger.error(f"Failed to set UI commands: {e}")
+        
     logger.info("Starting Userbot...")
     # Safely start the userbot inside the async context
     await userbot.start()  
