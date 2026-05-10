@@ -636,10 +636,25 @@ async def link_handler(event):
     # BATCH JSON INTERCEPTOR
     if event.is_reply:
         reply_msg = await event.get_reply_message()
-        # Quick heuristic to see if the message might contain JSON
-        if reply_msg.text and '{' in reply_msg.text and '}' in reply_msg.text:
+        json_str = None
+        
+        # --- NEW: Support reading directly from a replied .json file ---
+        if reply_msg.document and getattr(reply_msg.file, 'name', '').endswith('.json'):
             try:
-                json_str = reply_msg.text
+                status = await event.reply("📄 Reading JSON file...")
+                # Download file directly into memory as bytes, decode to string
+                file_bytes = await reply_msg.download_media(file=bytes)
+                json_str = file_bytes.decode('utf-8')
+                await status.delete()
+            except Exception as e:
+                return await event.reply(f"❌ Failed to read JSON file: `{e}`")
+                
+        # --- ORIGINAL: Support reading JSON from message text ---
+        elif reply_msg.text and '{' in reply_msg.text and '}' in reply_msg.text:
+            json_str = reply_msg.text
+
+        if json_str:
+            try:
                 # Mobile keyboards often replace standard quotes with smart quotes, breaking JSON
                 json_str = json_str.replace('“', '"').replace('”', '"')
                 
