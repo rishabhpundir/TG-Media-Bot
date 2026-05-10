@@ -23,7 +23,8 @@ DIRECTORIES = {
     '/mv2': '/mnt/media/movies',
     '/tv2': '/mnt/media/tv',
     '/lmv2': '/mnt/media/movies',
-    '/ltv2': '/mnt/media/tv'
+    '/ltv2': '/mnt/media/tv',
+    '/docu': '/mnt/blue/docu'
 }
 
 # Constraints

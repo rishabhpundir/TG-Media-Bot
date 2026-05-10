@@ -37,12 +37,13 @@ Here is your current command list:
 📥 **Downloads:**
 `/mv` / `/mv2` - Reply to file -> Save to Movies.
 `/tv` / `/tv2` - Reply to file -> Save to TV.
+`/docu` - Reply to file -> Save to Documentaries.
 `/lmv <link>` / `/lmv2 <link>` - Fetch restricted link -> Movies.
 `/ltv <link>` / `/ltv2 <link>` - Fetch restricted link -> TV.
 
 🧲 **Aria (`/aria`):**
-`/aria <mv|tv|mv2|tv2> <link>` - Send Magnet/Direct link to Aria2c.
-`/aria <mv|tv|mv2|tv2>` - Reply to a `.torrent` file to send to Aria2c.
+`/aria <mv|tv|mv2|tv2|docu> <link>` - Send Magnet/Direct link to Aria2c.
+`/aria <mv|tv|mv2|tv2|docu>` - Reply to a `.torrent` file to send to Aria2c.
 `/aria list` - Show all active, waiting, and stopped Aria2 downloads.
 `/aria <GID>` - Track the live status of a specific task.
 `/aria start|stop|rm|del` - Reply to an Aria2 status msg to manage it.

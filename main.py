@@ -52,13 +52,13 @@ def register_handlers():
     bot.add_event_handler(handlers.gd_handler, events.NewMessage(pattern=r'^/gd(?:\s+(.*))?$'))
 
     # 🧲 Aria2c Management
-    bot.add_event_handler(handlers.aria_handler, events.NewMessage(pattern=r'^/aria (mv|tv|mv2|tv2)(?:\s+(.*))?$'))
+    bot.add_event_handler(handlers.aria_handler, events.NewMessage(pattern=r'^/aria\s+(mv|tv|mv2|tv2|docu)(?:\s+(.*))?$'))
     bot.add_event_handler(handlers.aria_manage_handler, events.NewMessage(pattern=r'^/aria (list|start|stop|rm|del)$'))
     bot.add_event_handler(handlers.aria_track_handler, events.NewMessage(pattern=r'^/aria\s+([a-fA-F0-9]{16})$'))
 
     # 📥 Standard & Link Downloads
-    bot.add_event_handler(handlers.standard_handler, events.NewMessage(pattern=r'^/(mv|tv|mv2|tv2)$'))
-    bot.add_event_handler(handlers.link_handler, events.NewMessage(pattern=r'^/l(mv|tv|mv2|tv2)'))
+    bot.add_event_handler(handlers.standard_handler, events.NewMessage(pattern=r'^/(mv|tv|mv2|tv2|docu)$'))
+    bot.add_event_handler(handlers.link_handler, events.NewMessage(pattern=r'^/l(mv|tv|mv2|tv2|docu)'))
 
 
 async def main():
