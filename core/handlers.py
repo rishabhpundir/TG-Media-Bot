@@ -11,6 +11,7 @@ import subprocess
 
 logger = logging.getLogger(__name__)
 
+import video.yt_dl as ytdl
 from core.aria_core import aria2_request, aria2_progress_tracker
 from core.utils import format_bytes, sanitize_filename, ensure_mkv_extension
 from config import (DIRECTORIES, ALLOWED_USERS, MAX_FILE_SIZE_BYTES, 
@@ -18,6 +19,7 @@ from config import (DIRECTORIES, ALLOWED_USERS, MAX_FILE_SIZE_BYTES,
 from state import (queue, active_downloads, pending_deletions, 
                    pending_aria_actions, current_concurrent_count)
 from uploader.gdriveup import upload_single_target
+from telethon.tl.types import DocumentAttributeVideo
 
 
 bot = None
@@ -44,38 +46,77 @@ Here is your current command list:
 🧲 **Aria (`/aria`):**
 `/aria <mv|tv|mv2|tv2|docu> <link>` - Send Magnet/Direct link to Aria2c.
 `/aria <mv|tv|mv2|tv2|docu>` - Reply to a `.torrent` file to send to Aria2c.
-`/aria list` - Show all active, waiting, and stopped Aria2 downloads.
-`/aria <GID>` - Track the live status of a specific task.
-`/aria start|stop|rm|del` - Reply to an Aria2 status msg to manage it.
-  *(rm = Remove task, del = Remove task + Delete Files)*
 
-🗜️ **Archive Management (`/unzip`):**
-`/unzip` - Reply to a completed file message to extract it into a folder.
-`/unzip del` - Reply to a message to extract AND delete the original archive.
-`/unzip <mv|tv|mv2|tv2> <keyword1.keyword2>` - Search & extract a matching archive.
-`/unzip del <mv|tv|mv2|tv2> <keyword.keyword>` - Search, extract, and delete archive.
-
-🗄️ **File Manager (`/fm`):**
-`/fm ls` - List base directories (e.g., `/fm ls`).
-`/fm ls <dir_key/path>` - View folder contents (e.g., `/fm ls tv/Breaking Bad`).
-`/fm rn "<path>" "<new_name>"` - Rename a file/folder (e.g., `/fm rn "tv/old.mkv" "new.mkv"`).
-`/fm rn all "<dir>" "<pattern>"` - Bulk rename alphabetically (e.g., `/fm rn all "tv/Show" "S0{NUM:1} E0{NUM:7}.mkv"`).
-`/fm mov "<src>" "<dest>"` - Move a file/folder (e.g., `/fm mov "mv/File.mkv" "tv/Show/"`).
-`/fm rm "<path>"` - Instantly delete a file/folder (e.g., `/fm rm "tv/BadFile.mkv"`).
+📺 **YouTube-DL (`/ytdl`):**
+`/ytdl <dir_key> <link>` - Download video to folder.
+`/ytdl tg <dir_key> <link>` - Download & upload to TG Channel.
+*(Reply to a manifest .txt file to batch process)*
 
 ☁️ **Google Drive Upload (`/gd`):**
 `/gd` - Reply to a completed download message to upload it.
 `/gd "<dir_key>/<name>"` - Directly upload a file/folder (e.g., `/gd "tv/Breaking Bad"`).
 
-⚙️ **Task Management & Misc:**
-`/cancel` - Reply to an active download or pending list to abort.
-`/del` - Reply to a "Download Complete" message to delete that file.
-`/del <mv|tv|mv2|tv2> <keyword1.keyword2>` - Search for and safely delete files.
-`/cls` - Clear all non-pinned messages in this chat.
-`/cmd <module>` - Get detailed help & examples (`tgdl`, `aria`, `unzip`, `fm`, `misc`).
+🗄️ **File Manager (`/fm`):**
+`/fm ls` - List base directories.
+`/fm ls <dir_key/path>` - View contents.
+`/fm rn "<path>" "<new_name>"` - Rename.
+`/fm rn all "<dir>" "<pattern>"` - Bulk rename alphabetically.
+`/fm mov "<src>" "<dest>"` - Move files.
+`/fm rm "<path>"` - Delete file/folder.
+
+⚙️ **Miscellaneous:**
+`/cancel` - Abort active task.
+`/del` - Delete completed file (reply).
+`/del <dir_key> <keywords>` - Search & safely delete.
+`/cmd <category>` - Detailed help.
 """
 
-    await event.reply(welcome_text)
+    args = event.message.text.split()
+    if len(args) == 1:
+        await event.reply(welcome_text)
+    elif len(args) == 2 and args[1].lower() == 'cmd':
+        help_dict = {
+            "dl": "📥 **Downloads (`dl`)**\n\n"
+                  "`/mv` or `/tv` - Reply to a file. Downloads to respective folder.\n"
+                  "`/lmv <link>` or `/ltv <link>` - Downloads restricted telegram links.\n\n"
+                  "📺 **YouTube-DL (`ytdl`)**\n"
+                  "`/ytdl <dir> <url>` - Download streams/videos.\n"
+                  "`/ytdl tg <dir> <url>` - Download & upload to destination channel.\n"
+                  "*(Supports replying to a .txt manifest for batch queuing)*",
+                  
+            "aria": "🧲 **Aria2 (`aria`)**\n\n"
+                    "`/aria <mv|tv> <link>` - Add Magnet/Direct Link.\n"
+                    "`/aria <mv|tv>` - Reply to `.torrent` file.\n"
+                    "`/aria list` - View active tasks.\n"
+                    "`/aria rm <GID>` - Remove a specific task.\n"
+                    "`/aria stop` - Pause all active tasks.\n"
+                    "`/aria start` - Resume all paused tasks.\n"
+                    "`/aria del` - Purge completed/failed tasks from tracker.",
+                    
+            "gd": "☁️ **Google Drive (`gd`)**\n\n"
+                  "`/gd` - Reply to a download success message.\n"
+                  "`/gd \"<dir>/<name>\"` - Directly upload to the drive folder.\n*Example:* `/gd \"tv/Breaking Bad\"`",
+                  
+            "fm": "🗄️ **File Manager (`fm`)**\n\n"
+                  "`/fm ls` - List base directories.\n*Example:* `/fm ls`\n\n"
+                  "`/fm ls <dir_key/path>` - View contents.\n*Example:* `/fm ls tv/Breaking Bad`\n\n"
+                  "`/fm rn \"<path>\" \"<new_name>\"` - Rename file/folder.\n*Example:* `/fm rn \"tv/old.mkv\" \"new.mkv\"`\n\n"
+                  "`/fm rn all \"<dir>\" \"<pattern>\"` - Bulk rename alphabetically.\n*Example:* `/fm rn all \"tv/Show\" \"S0{NUM:1} E0{NUM:7}.mkv\"`\n\n"
+                  "`/fm mov \"<src>\" \"<dest>\"` - Move file/folder.\n*Example:* `/fm mov \"mv/File.mkv\" \"tv/Show/\"`\n\n"
+                  "`/fm rm \"<path>\"` - Delete file/folder.\n*Example:* `/fm rm \"tv/BadFile.mkv\"`",
+                  
+            "misc": "⚙️ **Miscellaneous (`misc`)**\n\n"
+                    "`/cancel` - Abort active/pending task.\n*Example:* Reply to progress with `/cancel`\n\n"
+                    "`/del` - Delete completed file.\n*Example:* Reply to completion with `/del`\n\n"
+                    "`/del <dir> <keywords>` - Search & safely delete.\n*Example:* `/del mv spider man`\n\n"
+                    "`/cls` - Clear the entire Telegram chat history."
+        }
+        
+        category = args[1].lower()
+        if category in help_dict:
+            await event.reply(help_dict[category])
+        else:
+            await event.reply("❌ Invalid category. Use: `dl`, `aria`, `gd`, `fm`, `misc`")
 
 
 async def fm_handler(event):
@@ -1045,4 +1086,131 @@ async def gd_handler(event):
             del active_gd_uploads[status_msg.id]
         
                
+async def ytdl_handler(event):
+    if event.sender_id not in ALLOWED_USERS:
+        return
+
+    args = event.message.text.split()[1:]
+    tg_mode = False
+    
+    if args and args[0].lower() == 'tg':
+        tg_mode = True
+        args.pop(0)
+
+    if not args:
+        return await event.reply("❌ **Usage:** `/ytdl [tg] <dir_key> [url]`\nOr reply to a `manifest.txt` file.")
+
+    dir_key = f"/{args[0].lower()}"
+    if dir_key not in DIRECTORIES:
+        return await event.reply(f"❌ Invalid directory. Allowed: `{', '.join(DIRECTORIES.keys())}`")
+
+    dest_dir = DIRECTORIES[dir_key]
+    url = args[1] if len(args) > 1 else None
+    
+    videos_to_process = []
+    
+    # 1. Manifest Mode
+    if not url and event.is_reply:
+        reply_msg = await event.get_reply_message()
+        if reply_msg.document and reply_msg.file.name.endswith('.txt'):
+            status_msg = await event.reply("📄 **Parsing manifest file...**")
+            temp_manifest = await reply_msg.download_media(file=os.path.join(dest_dir, f"manifest_{int(time.time())}.txt"))
+            try:
+                videos_to_process = ytdl.parse_manifest(temp_manifest)
+            except Exception as e:
+                return await status_msg.edit(f"❌ **Manifest parse error:** `{e}`")
+            finally:
+                if os.path.exists(temp_manifest): os.remove(temp_manifest)
+                
+            if not videos_to_process:
+                return await status_msg.edit("❌ **No valid entries found in manifest.**")
+        else:
+            return await event.reply("❌ **Reply must be a .txt manifest file.**")
+            
+    # 2. Single Link Mode
+    elif url:
+        videos_to_process.append((url, None, None, None))
+        status_msg = await event.reply("⏳ **Initializing YouTube-DL task...**")
+    else:
+        return await event.reply("❌ **Provide a URL or reply to a manifest file.**")
+
+    channel_id = int(os.getenv("YTDL_CHANNEL_ID", "0"))
+    
+    # Process the queue
+    for i, (v_url, v_title, v_start, v_end) in enumerate(videos_to_process):
+        success = False
+        final_path = None
+        safe_title = None
         
+        # 3-Attempt Retry Logic
+        for attempt in range(3):
+            try:
+                await status_msg.edit(f"📥 **Downloading ({i+1}/{len(videos_to_process)}):**\n`{v_title or v_url}`\n*(Attempt {attempt+1}/3)*")
+                final_path, safe_title = await asyncio.to_thread(
+                    ytdl.download_and_process_sync, v_url, v_title, v_start, v_end, dest_dir
+                )
+                success = True
+                break
+            except Exception as e:
+                logger.error(f"ytdl attempt {attempt+1} failed for {v_url}: {e}")
+                await asyncio.sleep(3)
+                
+        if not success or not final_path:
+            await event.respond(f"❌ **Failed to download after 3 attempts:**\n`{v_title or v_url}`")
+            continue
+            
+        file_size_str = format_bytes(os.path.getsize(final_path))
+        
+        # Handle Telegram Upload Mode
+        if tg_mode:
+            start_time = [time.time()]
+            last_update_time = [0]
+            
+            async def upload_progress(current, total):
+                now = time.time()
+                if (now - last_update_time[0]) < 3 and current != total:
+                    return
+                last_update_time[0] = now
+                elapsed = now - start_time[0]
+                speed = current / elapsed if elapsed > 0 else 0
+                eta = (total - current) / speed if speed > 0 else 0
+                
+                pct = (current * 100) / total if total > 0 else 0
+                blocks = int(pct // 10)
+                prog_str = "🟦" * blocks + "⬜" * (10 - blocks)
+                
+                try:
+                    await status_msg.edit(
+                        f"☁️ **Uploading to Channel:**\n`{safe_title}`\n"
+                        f"{prog_str} **{pct:.1f}%**\n"
+                        f"🚀 `{format_bytes(speed)}/s` | ⏳ `{int(eta)}s`"
+                    )
+                except Exception:
+                    pass
+
+            try:
+                w, h, d = await asyncio.to_thread(ytdl.get_video_metadata, final_path)
+                thumb_path = await asyncio.to_thread(ytdl.generate_thumbnail, final_path)
+                
+                await bot.send_file(
+                    channel_id,
+                    file=final_path,
+                    caption=f"**{safe_title}**\n📁 `{file_size_str}`",
+                    supports_streaming=True,
+                    thumb=thumb_path,
+                    attributes=[DocumentAttributeVideo(duration=d, w=w, h=h)],
+                    progress_callback=upload_progress
+                )
+                
+                if thumb_path and os.path.exists(thumb_path):
+                    os.remove(thumb_path)
+                    
+                await status_msg.edit(f"✅ **YTDL Task Complete & Uploaded!**\n💾 `{file_size_str}`\n📂 `{final_path}`")
+            except Exception as e:
+                logger.exception(f"Telegram Upload Error: {e}")
+                await status_msg.edit(f"⚠️ **Downloaded, but TG Upload Failed:**\n`{e}`\n📂 `{final_path}`")
+        else:
+            await status_msg.edit(f"✅ **YTDL Download Complete!**\n💾 `{file_size_str}`\n📂 `{final_path}`")
+            
+            
+            
