@@ -71,52 +71,7 @@ Here is your current command list:
 `/cmd <category>` - Detailed help.
 """
 
-    args = event.message.text.split()
-    if len(args) == 1:
-        await event.reply(welcome_text)
-    elif len(args) == 2 and args[1].lower() == 'cmd':
-        help_dict = {
-            "dl": "📥 **Downloads (`dl`)**\n\n"
-                  "`/mv` or `/tv` - Reply to a file. Downloads to respective folder.\n"
-                  "`/lmv <link>` or `/ltv <link>` - Downloads restricted telegram links.\n\n"
-                  "📺 **YouTube-DL (`ytdl`)**\n"
-                  "`/ytdl <dir> <url>` - Download streams/videos.\n"
-                  "`/ytdl tg <dir> <url>` - Download & upload to destination channel.\n"
-                  "*(Supports replying to a .txt manifest for batch queuing)*",
-                  
-            "aria": "🧲 **Aria2 (`aria`)**\n\n"
-                    "`/aria <mv|tv> <link>` - Add Magnet/Direct Link.\n"
-                    "`/aria <mv|tv>` - Reply to `.torrent` file.\n"
-                    "`/aria list` - View active tasks.\n"
-                    "`/aria rm <GID>` - Remove a specific task.\n"
-                    "`/aria stop` - Pause all active tasks.\n"
-                    "`/aria start` - Resume all paused tasks.\n"
-                    "`/aria del` - Purge completed/failed tasks from tracker.",
-                    
-            "gd": "☁️ **Google Drive (`gd`)**\n\n"
-                  "`/gd` - Reply to a download success message.\n"
-                  "`/gd \"<dir>/<name>\"` - Directly upload to the drive folder.\n*Example:* `/gd \"tv/Breaking Bad\"`",
-                  
-            "fm": "🗄️ **File Manager (`fm`)**\n\n"
-                  "`/fm ls` - List base directories.\n*Example:* `/fm ls`\n\n"
-                  "`/fm ls <dir_key/path>` - View contents.\n*Example:* `/fm ls tv/Breaking Bad`\n\n"
-                  "`/fm rn \"<path>\" \"<new_name>\"` - Rename file/folder.\n*Example:* `/fm rn \"tv/old.mkv\" \"new.mkv\"`\n\n"
-                  "`/fm rn all \"<dir>\" \"<pattern>\"` - Bulk rename alphabetically.\n*Example:* `/fm rn all \"tv/Show\" \"S0{NUM:1} E0{NUM:7}.mkv\"`\n\n"
-                  "`/fm mov \"<src>\" \"<dest>\"` - Move file/folder.\n*Example:* `/fm mov \"mv/File.mkv\" \"tv/Show/\"`\n\n"
-                  "`/fm rm \"<path>\"` - Delete file/folder.\n*Example:* `/fm rm \"tv/BadFile.mkv\"`",
-                  
-            "misc": "⚙️ **Miscellaneous (`misc`)**\n\n"
-                    "`/cancel` - Abort active/pending task.\n*Example:* Reply to progress with `/cancel`\n\n"
-                    "`/del` - Delete completed file.\n*Example:* Reply to completion with `/del`\n\n"
-                    "`/del <dir> <keywords>` - Search & safely delete.\n*Example:* `/del mv spider man`\n\n"
-                    "`/cls` - Clear the entire Telegram chat history."
-        }
-        
-        category = args[1].lower()
-        if category in help_dict:
-            await event.reply(help_dict[category])
-        else:
-            await event.reply("❌ Invalid category. Use: `dl`, `aria`, `gd`, `fm`, `misc`")
+    await event.reply(welcome_text)
 
 
 async def fm_handler(event):
@@ -914,24 +869,31 @@ async def cmd_handler(event):
         
     module = event.pattern_match.group(1)
     if not module:
-        return await event.reply("❌ **Usage:** `/cmd <module>`\nAvailable modules: `tgdl`, `aria`, `unzip`, `fm`, `misc`")
+        return await event.reply("❌ **Usage:** `/cmd <module>`\nAvailable modules: `tgdl`, `aria`, `ytdl`, `gd`, `unzip`, `fm`, `misc`")
         
     module = module.strip().lower()
     
     help_texts = {
         "tgdl": "📥 **Downloads (`tgdl`)**\n\n"
-                "`/mv` / `/mv2` - Save to Movies.\n*Example:* Reply to a `.mkv` file with `/mv`\n\n"
-                "`/tv` / `/tv2` - Save to TV.\n*Example:* Reply to a `.mp4` file with `/tv`\n\n"
-                "`/lmv <link>` / `/lmv2 <link>` - Fetch restricted link to Movies.\n*Example:* `/lmv https://t.me/c/123/456`\n\n"
-                "`/ltv <link>` / `/ltv2 <link>` - Fetch restricted link to TV.\n*Example:* `/ltv https://t.me/channel/123`",
+                "`/mv` / `/mv2` / `/tv` / `/tv2` / `/docu` - Save media to respective folder.\n*Example:* Reply to a `.mkv` file with `/docu`\n\n"
+                "`/lmv <link>` / `/ltv <link>` / `/ldocu <link>` - Fetch restricted links.\n*Example:* `/lmv https://t.me/c/123/456`",
         
         "aria": "🧲 **Aria (`aria`)**\n\n"
-                "`/aria <mv|tv|mv2|tv2> <link>` - Send link to Aria2c.\n*Example:* `/aria mv magnet:?xt=urn:btih:...`\n\n"
-                "`/aria <mv|tv|mv2|tv2>` - Send `.torrent` to Aria2c.\n*Example:* Reply to a `.torrent` file with `/aria tv`\n\n"
+                "`/aria <mv|tv|mv2|tv2|docu> <link>` - Send link to Aria2c.\n*Example:* `/aria mv magnet:?xt=urn:btih:...`\n\n"
+                "`/aria <mv|tv|mv2|tv2|docu>` - Send `.torrent` to Aria2c.\n*Example:* Reply to a `.torrent` file with `/aria tv`\n\n"
                 "`/aria list` - Show all downloads.\n*Example:* `/aria list`\n\n"
                 "`/aria <GID>` - Track specific status.\n*Example:* `/aria 1a2b3c4d5e6f7g8h`\n\n"
                 "`/aria start|stop|rm|del` - Manage task.\n*Example:* Reply to a tracking message with `/aria stop`",
                 
+        "ytdl": "📺 **YouTube-DL (`ytdl`)**\n\n"
+                "`/ytdl <dir> <url>` - Download streams/videos.\n*Example:* `/ytdl docu https://youtube.com/...`\n\n"
+                "`/ytdl tg <dir> <url>` - Download & upload to destination channel.\n*Example:* `/ytdl tg tv https://...`\n\n"
+                "*(Supports replying to a .txt manifest for batch queuing)*",
+                
+        "gd":   "☁️ **Google Drive (`gd`)**\n\n"
+                "`/gd` - Upload a completed download to Drive.\n*Example:* Reply to a download success message with `/gd`\n\n"
+                "`/gd \"<dir_key>/<name>\"` - Directly upload a specific file/folder.\n*Example:* `/gd \"tv/Breaking Bad\"`",
+
         "unzip": "🗜️ **Archive Management (`unzip`)**\n\n"
                  "`/unzip` - Extract archive in place.\n*Example:* Reply to completed download with `/unzip`\n\n"
                  "`/unzip del` - Extract & delete original.\n*Example:* Reply to download with `/unzip del`\n\n"
@@ -957,7 +919,7 @@ async def cmd_handler(event):
     if module in help_texts:
         await event.reply(help_texts[module])
     else:
-        await event.reply(f"❌ **Unknown module:** `{module}`\nAvailable modules: `tgdl`, `aria`, `unzip`, `fm`, `misc`")
+        await event.reply(f"❌ **Unknown module:** `{module}`\nAvailable modules: `tgdl`, `aria`, `ytdl`, `gd`, `unzip`, `fm`, `misc`")
         
         
 async def gd_handler(event):
