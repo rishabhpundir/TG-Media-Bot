@@ -1,6 +1,7 @@
 import re
 import os
 import time
+import json
 import shlex
 import shutil
 import base64
@@ -42,6 +43,8 @@ Here is your current command list:
 `/docu` - Reply to file -> Save to Documentaries.
 `/lmv <link>` / `/lmv2 <link>` - Fetch restricted link -> Movies.
 `/ltv <link>` / `/ltv2 <link>` - Fetch restricted link -> TV.
+`/search <Channel_ID> (<keywords>)` - Search channel and get JSON file list.
+*(Reply to the JSON list with `/lmv <Folder_Name>` to bulk download them)*
 
 🧲 **Aria (`/aria`):**
 `/aria <mv|tv|mv2|tv2|docu> <link>` - Send Magnet/Direct link to Aria2c.
@@ -620,17 +623,80 @@ async def standard_handler(event):
         await event.reply(f"⏳ **Queued (Standard)** (Pos: {position})")
 
 
-# 2. LINK HANDLER (/lmv, /ltv) (Fixed Regex & Logic)
 async def link_handler(event):
     """
-    Handles links by asking the Userbot to fetch the message.
+    Handles single links or batch JSON payloads by asking the Userbot to fetch the messages.
     """
     if event.sender_id not in ALLOWED_USERS:
         return
     
     text_split = event.text.strip().split(maxsplit=1)
+    cmd_base = text_split[0].lower().replace('/l', '/') # Translates /lmv -> /mv for dir lookup
+
+    # BATCH JSON INTERCEPTOR
+    if event.is_reply:
+        reply_msg = await event.get_reply_message()
+        # Quick heuristic to see if the message might contain JSON
+        if reply_msg.text and '{' in reply_msg.text and '}' in reply_msg.text:
+            try:
+                json_str = reply_msg.text
+                # Mobile keyboards often replace standard quotes with smart quotes, breaking JSON
+                json_str = json_str.replace('“', '"').replace('”', '"')
+                
+                # Extract actual JSON from markdown code blocks if present
+                if '```json' in json_str:
+                    json_str = json_str.split('```json')[1].split('```')[0]
+                elif '```' in json_str:
+                    json_str = json_str.split('```')[1].split('```')[0]
+                    
+                batch_data = json.loads(json_str)
+                
+                # We have a valid JSON batch! Setup the destination.
+                folder_name = text_split[1].strip() if len(text_split) > 1 else f"Batch_{int(time.time())}"
+                base_target_dir = DIRECTORIES.get(cmd_base)
+                
+                if not base_target_dir:
+                    return await event.reply("❌ Invalid base directory command.")
+                    
+                # Create the requested sub-directory
+                target_dir = os.path.join(base_target_dir, folder_name)
+                os.makedirs(target_dir, exist_ok=True) 
+                
+                status = await event.reply(f"🕵️ **Userbot:** Processing batch of `{len(batch_data)}` files into folder `{folder_name}`...")
+                queued_count = 0
+                
+                for custom_name, link in batch_data.items():
+                    # Parse the standard t.me format
+                    match = re.search(r't\.me/(?:c/)?(\w+|\d+)/(\d+)', link)
+                    if not match: continue
+                    
+                    identifier = match.group(1)
+                    msg_id = int(match.group(2))
+                    entity = int(f"-100{identifier}") if identifier.isdigit() else identifier
+                    
+                    try:
+                        restricted_msg = await userbot.get_messages(entity, ids=msg_id)
+                        if not restricted_msg or not restricted_msg.media: continue
+                        if restricted_msg.file.size > MAX_FILE_SIZE_BYTES: continue
+                        
+                        clean_name = ensure_mkv_extension(sanitize_filename(custom_name))
+                        
+                        position = queue.qsize() + 1
+                        await queue.put((event, restricted_msg, target_dir, clean_name))
+                        queued_count += 1
+                    except Exception as e:
+                        logger.error(f"Batch fetch failed for {link}: {e}")
+                        
+                await status.edit(f"⏳ **Queued {queued_count} files for batch download!**\n📂 **Destination:** `{target_dir}`")
+                return # Exit successfully!
+
+            except json.JSONDecodeError:
+                # If parsing fails, fall through to normal single-link logic silently
+                pass
+
+    # STANDARD SINGLE LINK LOGIC
     if len(text_split) < 2:
-        return await event.reply("❌ Usage: `/lmv <link>` or `/ltv <link>`")
+        return await event.reply("❌ Usage: `/lmv <link>` or `/ltv <link>`\n*(Or reply to a JSON list with `/lmv <Folder Name>`)*")
 
     link_text = text_split[1]
     
@@ -876,7 +942,10 @@ async def cmd_handler(event):
     help_texts = {
         "tgdl": "📥 **Downloads (`tgdl`)**\n\n"
                 "`/mv` / `/mv2` / `/tv` / `/tv2` / `/docu` - Save media to respective folder.\n*Example:* Reply to a `.mkv` file with `/docu`\n\n"
-                "`/lmv <link>` / `/ltv <link>` / `/ldocu <link>` - Fetch restricted links.\n*Example:* `/lmv https://t.me/c/123/456`",
+                "`/lmv <link>` / `/ltv <link>` - Fetch restricted links.\n*Example:* `/lmv https://t.me/c/123/456`\n\n"
+                "🔍 **Bulk Search & Download:**\n"
+                "`/search <Channel_ID> (<keywords>)` - Get a JSON list of files matching keywords.\n*Example:* `/search -10012345678 (spider man)`\n\n"
+                "*(Reply to the JSON list with `/lmv <Folder_Name>` to bulk download!)*",
         
         "aria": "🧲 **Aria (`aria`)**\n\n"
                 "`/aria <mv|tv|mv2|tv2|docu> <link>` - Send link to Aria2c.\n*Example:* `/aria mv magnet:?xt=urn:btih:...`\n\n"
@@ -1209,4 +1278,84 @@ async def ytdl_handler(event):
             await status_msg.edit(f"✅ **YTDL Download Complete!**\n💾 `{file_size_str}`\n📂 `{final_path}`")
             
             
+async def search_handler(event):
+    """
+    Searches a specified channel for keywords and returns an editable JSON dictionary.
+    Usage: /search <channel_id> (<search keywords>)
+    """
+    if event.sender_id not in ALLOWED_USERS:
+        return
+        
+    entity_str = event.pattern_match.group(1)
+    keywords = event.pattern_match.group(2).strip()
+    
+    status_msg = await event.reply(f"🔍 **Userbot:** Searching for `{keywords}`...")
+    
+    try:
+        # Resolve entity (handle private channel IDs safely)
+        if entity_str.lstrip('-').isdigit():
+            entity = int(entity_str)
+            # Ensure proper Telegram API format for supergroups/channels
+            if not str(entity).startswith('-100') and not str(entity).startswith('@'):
+                entity = int(f"-100{entity}")
+        else:
+            entity = entity_str
+
+        results = {}
+        
+        # Utilize server-side search for speed. Limit to 100 to prevent massive memory payloads.
+        async for msg in userbot.iter_messages(entity, search=keywords, limit=100):
+            # Enforce that the message MUST have a file/media attached
+            if msg.media and hasattr(msg, 'file') and msg.file:
+                
+                # Extract clean channel ID for the t.me link
+                chat_id_str = str(msg.chat_id).replace('-100', '')
+                link = f"https://t.me/c/{chat_id_str}/{msg.id}"
+                
+                # Construct a sensible starting filename
+                filename = getattr(msg.file, 'name', None)
+                if not filename:
+                    filename = f"Media_{msg.id}{msg.file.ext or '.mkv'}"
+                    
+                # Prevent dictionary key overwrites if files share the exact same name
+                original_filename = filename
+                dup_counter = 1
+                while filename in results:
+                    name_part, ext = os.path.splitext(original_filename)
+                    filename = f"{name_part}_{dup_counter}{ext}"
+                    dup_counter += 1
+                    
+                results[filename] = link
+                
+        if not results:
+            return await status_msg.edit(f"⚠️ **No media files found matching:** `{keywords}`")
             
+        # Format output as an editable JSON block
+        json_output = json.dumps(results, indent=4, ensure_ascii=False)
+        
+        msg_text = (
+            f"✅ **Search Complete!** Found `{len(results)}` files.\n"
+            f"Edit the names below if needed. **Reply** to this message with `/lmv <Folder Name>` or `/ltv <Folder Name>` to batch download.\n\n"
+            f"```json\n{json_output}\n```"
+        )
+        
+        # Failsafe for standard Telegram character limits
+        if len(msg_text) > 4096:
+            temp_file = f"search_results_{int(time.time())}.json"
+            with open(temp_file, "w", encoding="utf-8") as f:
+                f.write(json_output)
+            await event.reply(
+                file=temp_file, 
+                message="✅ **Search Complete!** Results were too large for text. Edit this file, paste the contents back here, and reply to it with your `/lmv` command."
+            )
+            os.remove(temp_file)
+            await status_msg.delete()
+        else:
+            await status_msg.edit(msg_text)
+            
+    except Exception as e:
+        logger.exception("Search handler failed")
+        await status_msg.edit(f"❌ **Search Error:** `{str(e)}`")
+        
+        
+        
