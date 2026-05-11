@@ -1359,16 +1359,25 @@ async def search_handler(event):
                 if not raw_name:
                     raw_name = getattr(msg.file, 'name', None)
 
-                # 3. Process the name to fix [Errno 36] Long Filename issues
+                # Process the name to fix [Errno 36] Long Filename issues
                 if raw_name:
-                    # Defines clean_name to prevent NameError, and trims trailing descriptions
-                    clean_name = raw_name.strip()
+                    # Strip leading/trailing underscores, hyphens, tildes, and spaces
+                    clean_name = raw_name.strip(" _-~")
                     
-                    # Ensure it retains an extension
+                    # Verify and append extension safely
                     _, ext = os.path.splitext(clean_name)
-                    if not ext:
+                    
+                    # Regex checks if 'ext' looks like a real media extension (e.g. .mkv, .mp4) 
+                    # This prevents fake extensions like ".0" from "DDP 2.0" tricking the system
+                    is_valid_ext = bool(ext and re.match(r'^\.[a-zA-Z0-9]{2,5}$', ext))
+                    # Prevent codecs from registering as file extensions
+                    is_codec_fake_ext = ext.lower() in ['.264', '.265']
+                    
+                    if not is_valid_ext or is_codec_fake_ext:
                         # Grab the file's native extension, or use your custom fallback
                         file_ext = getattr(msg.file, 'ext', None)
+                        if not file_ext:
+                            file_ext = '.mkv' if "0p" in clean_name.lower() else '.mka'
                         clean_name += file_ext
                         
                     filename = clean_name
