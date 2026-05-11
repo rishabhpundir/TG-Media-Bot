@@ -1361,15 +1361,15 @@ async def search_handler(event):
 
                 # 3. Process the name to fix [Errno 36] Long Filename issues
                 if raw_name:
-                    # Cut off at the first occurrence of 2+ spaces or a newline
-                    clean_name = re.split(r'\s{2,}|\n', raw_name)[0].strip()
+                    # # Cut off at the first occurrence of 2+ spaces or a newline
+                    # clean_name = re.split(r'\s{2,}|\n', raw_name)[0].strip()
                     
                     # Ensure it retains an extension
-                    _, ext = os.path.splitext(clean_name)
+                    _, ext = os.path.splitext(raw_name)
                     if not ext:
                         # Retains your custom audio/video extension logic
-                        fallback_ext = '.mkv' if "0p" in clean_name.lower() else '.mka'
-                        clean_name += (msg.file.ext or fallback_ext)
+                        fallback_ext = '.mkv' if "0p" in raw_name.lower() else '.mka'
+                        clean_name += fallback_ext
                     filename = clean_name
                 else:
                     filename = f"Media_{msg.id}{msg.file.ext or '.mkv'}"
