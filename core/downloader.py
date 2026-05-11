@@ -1,12 +1,13 @@
 import os
 import time
 import asyncio
+import logging
 
 from core.utils import format_bytes
 from config import MAX_CONCURRENT_DOWNLOADS
 from state import queue, active_downloads, current_concurrent_count
-from core.fast_dl import parallel_download
 
+logger = logging.getLogger(__name__)
 
 bot = None
 userbot = None
@@ -84,37 +85,46 @@ async def perform_download(status_msg, media_msg, folder_path, clean_name):
     start_time = time.time()
     last_update = [0]
 
-    try:
-        # Clean async wrapper for thread-safe UI updates
-        async def update_progress(current, total):
-            await progress_bar(current, total, status_msg, start_time, last_update, clean_name)
+    # NATIVE HIGH-SPEED CHUNKING
+    file_size = media_msg.file.size
+    downloaded = 0
+    client = media_msg._client
 
-        # Extract the exact client (bot or userbot) that fetched this specific message
-        client = media_msg._client
-        
-        await parallel_download(
-            client=client,
-            message=media_msg,
-            dest_path=temp_path,
-            progress_callback=update_progress,
-            workers=4  # 4 simultaneous requests to saturate bandwidth
-        )
+    # Thread-safe write helper
+    def sync_write(fd, data):
+        fd.write(data)
+
+    try:
+        # Open the file once to avoid high disk I/O overhead
+        with open(temp_path, 'wb') as f:
+            # request_size=1048576 forces Telegram's absolute max 1MB packet size
+            async for chunk in client.iter_download(media_msg.media, request_size=1048576):
+                
+                # Push the 1MB write to a background thread to protect the async loop
+                await asyncio.to_thread(sync_write, f, chunk)
+                downloaded += len(chunk)
+                
+                # Natively update UI without spamming task queues 
+                # (Your progress_bar handles the 3-second throttle natively)
+                await progress_bar(downloaded, file_size, status_msg, start_time, last_update, clean_name)
 
         os.rename(temp_path, final_path)
         
-        # Calculate final size and update message with full path in quotes
         file_size_str = format_bytes(os.path.getsize(final_path))
         await status_msg.edit(
             f"✅ **Download Complete!**\n"
             f"💾 **Size:** `{file_size_str}`\n"
-            f"📂 **Path:** \"{final_path}\""
+            f"📂 **Path:** `{final_path}`"
         )
 
     except asyncio.CancelledError:
+        # Standard task cancellation automatically intercepts here
         if os.path.exists(temp_path): os.remove(temp_path)
-        await status_msg.edit("❌ **Download Cancelled.**")
+        await status_msg.edit("🛑 **Download Cancelled & Cleaned Up.**")
+        raise # Pass bubble up to clean state
     except Exception as e:
+        logger.error(f"Telegram Download error: {e}")
         if os.path.exists(temp_path): os.remove(temp_path)
-        await status_msg.edit(f"❌ **Failed:** `{str(e)}`")
+        await status_msg.edit(f"❌ **Error downloading:** `{e}`")
       
 
