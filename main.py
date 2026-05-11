@@ -124,8 +124,9 @@ async def main():
     handlers.bot = bot
     handlers.userbot = userbot
 
-    # Start the background download queue worker using modern asyncio syntax
-    asyncio.create_task(downloader.download_worker())
+    # Spawn multiple background download queue workers for true parallel batching
+    for _ in range(config.MAX_CONCURRENT_DOWNLOADS):
+        asyncio.create_task(downloader.download_worker())
     
     # Run both clients simultaneously until you manually stop the script
     await asyncio.gather(
