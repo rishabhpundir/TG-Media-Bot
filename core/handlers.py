@@ -1355,24 +1355,26 @@ async def search_handler(event):
                     if sanitized_caption:
                         raw_name = sanitized_caption
 
-                # 2. FALLBACK: Use the internal file name if caption was empty/invalid
+                # Use the internal file name if caption was empty/invalid
                 if not raw_name:
                     raw_name = getattr(msg.file, 'name', None)
 
                 # 3. Process the name to fix [Errno 36] Long Filename issues
                 if raw_name:
-                    # # Cut off at the first occurrence of 2+ spaces or a newline
-                    # clean_name = re.split(r'\s{2,}|\n', raw_name)[0].strip()
+                    # Defines clean_name to prevent NameError, and trims trailing descriptions
+                    clean_name = raw_name.strip()
                     
                     # Ensure it retains an extension
-                    _, ext = os.path.splitext(raw_name)
+                    _, ext = os.path.splitext(clean_name)
                     if not ext:
-                        # Retains your custom audio/video extension logic
-                        fallback_ext = '.mkv' if "0p" in raw_name.lower() else '.mka'
-                        clean_name += fallback_ext
+                        # Grab the file's native extension, or use your custom fallback
+                        file_ext = getattr(msg.file, 'ext', None)
+                        fallback_ext = '.mkv' if "0p" in clean_name.lower() else '.mka'
+                        clean_name += (file_ext or fallback_ext)
+                        
                     filename = clean_name
                 else:
-                    filename = f"Media_{msg.id}{msg.file.ext or '.mkv'}"
+                    filename = f"Media_{msg.id}{getattr(msg.file, 'ext', '.mkv')}"
                     
                 # Prevent dictionary key overwrites if files share the exact same name
                 original_filename = filename
