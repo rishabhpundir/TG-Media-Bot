@@ -1370,7 +1370,7 @@ async def search_handler(event):
                         # Grab the file's native extension, or use your custom fallback
                         file_ext = getattr(msg.file, 'ext', None)
                         fallback_ext = '.mkv' if "0p" in clean_name.lower() else '.mka'
-                        clean_name += (file_ext or fallback_ext)
+                        clean_name += fallback_ext
                         
                     filename = clean_name
                 else:
