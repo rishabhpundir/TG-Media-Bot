@@ -1312,17 +1312,21 @@ async def ytdl_handler(event):
 async def search_handler(event):
     """
     Searches a specified channel for keywords and returns an editable JSON dictionary.
-    Usage: /search <channel_id> (<search keywords>)
+    Usage: /search <channel_id> (<search keywords>) [limit]
     """
     if event.sender_id not in ALLOWED_USERS:
         return
         
     entity_str = event.pattern_match.group(1)
     keywords = event.pattern_match.group(2).strip()
+    limit_str = event.pattern_match.group(3)
     
-    status_msg = await event.reply(f"🔍 **Userbot:** Searching for `{keywords}`...")
+    # Use provided limit, otherwise default to 100 to protect memory
+    search_limit = int(limit_str) if limit_str else 100
+    status_msg = await event.reply(f"🔍 **Userbot:** Searching for `{keywords}` (Limit: `{search_limit}`)...")
     
     try:
+        # Resolve entity (handle private channel IDs safely)
         # Resolve entity (handle private channel IDs safely)
         if entity_str.lstrip('-').isdigit():
             entity = int(entity_str)

@@ -67,7 +67,7 @@ def register_handlers():
     bot.add_event_handler(handlers.link_handler, events.NewMessage(pattern=r'^/l(mv|tv|mv2|tv2|docu)'))
     
     # 🔍 Userbot Search & Batch (NEW)
-    bot.add_event_handler(handlers.search_handler, events.NewMessage(pattern=r'^/search\s+(\S+)\s+\((.+)\)$'))
+    bot.add_event_handler(handlers.search_handler, events.NewMessage(pattern=r'^/search\s+(\S+)\s+\((.+?)\)(?:\s+(\d+))?$'))
 
 
 async def main():
@@ -100,7 +100,7 @@ async def main():
             BotCommand(command="del", description="Delete Files"),
             BotCommand(command="cancel", description="Cancel Active Task"),
             BotCommand(command="cmd", description="View Help Categories"),
-            BotCommand(command="search", description="Search channel: /search <ID> (<keywords>)"),
+            BotCommand(command="search", description="Search channel: /search <ID> (<keywords>) [limit]"),
         ]
         ))
     except Exception as e:
