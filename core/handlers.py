@@ -1344,15 +1344,32 @@ async def search_handler(event):
                 link = f"https://t.me/c/{chat_id_str}/{msg.id}"
                 
                 # Construct a sensible starting filename
-                raw_name = getattr(msg.file, 'name', None)
+                raw_name = None
+
+                # Try the message caption (msg.text) first
+                if msg.text and msg.text.strip():
+                    # Grab just the first line of the caption to avoid massive descriptions
+                    caption_first_line = re.split(r'\s{2,}|\n', msg.text)[0].strip()
+                    # Strip illegal characters for Linux/Windows file systems
+                    sanitized_caption = re.sub(r'[\\/*?:"<>|]', "", caption_first_line)
+                    if sanitized_caption:
+                        raw_name = sanitized_caption
+
+                # 2. FALLBACK: Use the internal file name if caption was empty/invalid
+                if not raw_name:
+                    raw_name = getattr(msg.file, 'name', None)
+
+                # 3. Process the name to fix [Errno 36] Long Filename issues
                 if raw_name:
-                    # Fix [Errno 36]: Cut off at the first occurrence of 2+ spaces or a newline
+                    # Cut off at the first occurrence of 2+ spaces or a newline
                     clean_name = re.split(r'\s{2,}|\n', raw_name)[0].strip()
                     
                     # Ensure it retains an extension
                     _, ext = os.path.splitext(clean_name)
                     if not ext:
-                        clean_name += (msg.file.ext or '.mkv' if "0p" in clean_name.lower() else '.mka')
+                        # Retains your custom audio/video extension logic
+                        fallback_ext = '.mkv' if "0p" in clean_name.lower() else '.mka'
+                        clean_name += (msg.file.ext or fallback_ext)
                     filename = clean_name
                 else:
                     filename = f"Media_{msg.id}{msg.file.ext or '.mkv'}"
