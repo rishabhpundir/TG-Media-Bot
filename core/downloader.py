@@ -12,6 +12,9 @@ logger = logging.getLogger(__name__)
 bot = None
 userbot = None
 
+# Global lock to prevent Telethon SQLite/DC-Auth deadlocks
+dc_auth_lock = asyncio.Lock()
+
 
 async def progress_bar(current, total, event, start_time, last_update_time, filename):
     now = time.time()
@@ -97,9 +100,18 @@ async def perform_download(status_msg, media_msg, folder_path, clean_name):
     try:
         # Open the file once to avoid high disk I/O overhead
         with open(temp_path, 'wb') as f:
-            # request_size=1048576 forces Telegram's absolute max 1MB packet size
-            async for chunk in client.iter_download(media_msg.media, request_size=1048576):
-                
+            chunk_generator = client.iter_download(media_msg.media, request_size=1048576)
+            
+            # Locks the SQLite DB exclusively for the 1st chunk to prevent collision deadlocks.
+            async with dc_auth_lock:
+                async for first_chunk in chunk_generator:
+                    await asyncio.to_thread(sync_write, f, first_chunk)
+                    downloaded += len(first_chunk)
+                    await progress_bar(downloaded, file_size, status_msg, start_time, last_update, clean_name)
+                    break # Exit the lock instantly after securing the first chunk
+            
+            # Now process the remaining 99.9% of the file in full parallel
+            async for chunk in chunk_generator:
                 # Push the 1MB write to a background thread to protect the async loop
                 await asyncio.to_thread(sync_write, f, chunk)
                 downloaded += len(chunk)
