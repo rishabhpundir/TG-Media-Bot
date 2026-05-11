@@ -1322,11 +1322,10 @@ async def search_handler(event):
     limit_str = event.pattern_match.group(3)
     
     # Use provided limit, otherwise default to 100 to protect memory
-    search_limit = int(limit_str) if limit_str else 100
+    search_limit = int(limit_str) if limit_str else 1000
     status_msg = await event.reply(f"🔍 **Userbot:** Searching for `{keywords}` (Limit: `{search_limit}`)...")
     
     try:
-        # Resolve entity (handle private channel IDs safely)
         # Resolve entity (handle private channel IDs safely)
         if entity_str.lstrip('-').isdigit():
             entity = int(entity_str)
@@ -1403,6 +1402,8 @@ async def search_handler(event):
             return await status_msg.edit(f"⚠️ **No media files found matching:** `{keywords}`")
             
         # Format output as an editable JSON block
+        if len(results) > search_limit:
+            results = dict(list(results.items())[:search_limit])
         json_output = json.dumps(results, indent=4, ensure_ascii=False)
         
         msg_text = (
