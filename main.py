@@ -25,6 +25,12 @@ logging.basicConfig(
 
 logger = logging.getLogger(__name__)
 
+try:
+    import cryptg
+    logger.info("✅ Cryptg C-Extension loaded successfully! Fast encryption is ACTIVE.")
+except ImportError:
+    logger.warning("⚠️ Cryptg NOT FOUND! Telethon is using pure Python AES (Expect 50kbps bottlenecks).")
+
 # Import our custom modules
 import config
 import core.downloader as downloader

@@ -5,6 +5,7 @@ import asyncio
 from core.utils import format_bytes
 from config import MAX_CONCURRENT_DOWNLOADS
 from state import queue, active_downloads, current_concurrent_count
+from core.fast_dl import parallel_download
 
 
 bot = None
@@ -84,12 +85,19 @@ async def perform_download(status_msg, media_msg, folder_path, clean_name):
     last_update = [0]
 
     try:
-        # download_media automatically uses the client that fetched the message
-        await media_msg.download_media(
-            file=temp_path,
-            progress_callback=lambda c, t: bot.loop.create_task(
-                progress_bar(c, t, status_msg, start_time, last_update, clean_name)
-            )
+        # Clean async wrapper for thread-safe UI updates
+        async def update_progress(current, total):
+            await progress_bar(current, total, status_msg, start_time, last_update, clean_name)
+
+        # Extract the exact client (bot or userbot) that fetched this specific message
+        client = media_msg._client
+        
+        await parallel_download(
+            client=client,
+            message=media_msg,
+            dest_path=temp_path,
+            progress_callback=update_progress,
+            workers=4  # 4 simultaneous requests to saturate bandwidth
         )
 
         os.rename(temp_path, final_path)
