@@ -1369,8 +1369,7 @@ async def search_handler(event):
                     if not ext:
                         # Grab the file's native extension, or use your custom fallback
                         file_ext = getattr(msg.file, 'ext', None)
-                        fallback_ext = '.mkv' if "0p" in clean_name.lower() else '.mka'
-                        clean_name += fallback_ext
+                        clean_name += file_ext
                         
                     filename = clean_name
                 else:
@@ -1383,7 +1382,8 @@ async def search_handler(event):
                     name_part, ext = os.path.splitext(original_filename)
                     filename = f"{name_part}_{dup_counter}{ext}"
                     dup_counter += 1
-                    
+                
+                filename = sanitize_filename(filename)
                 results[filename] = link
                 
         if not results:
