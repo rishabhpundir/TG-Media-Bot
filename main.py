@@ -85,6 +85,7 @@ async def main():
             scope=BotCommandScopeDefault(),
             lang_code='',
             commands=[
+            BotCommand(command="cls", description="Clear Chat Messages"),
             BotCommand(command="mv", description="Download file to Movies"),
             BotCommand(command="lmv", description="Download file to Movies by internal tg link"),
             BotCommand(command="mv2", description="Download file to Movies"),

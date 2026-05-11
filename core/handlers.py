@@ -442,7 +442,23 @@ async def cancel_handler(event):
     task = active_downloads.get(reply_msg.id)
     if task:
         task.cancel()
-        return await event.reply("🛑 Task Cancelled!")
+        
+        # Nuke the pending queue
+        cleared_count = 0
+        try:
+            # Flushes the asyncio.Queue instantly without blocking the event loop
+            while not queue.empty():
+                queue.get_nowait()
+                queue.task_done()
+                cleared_count += 1
+        except Exception as e:
+            # Assuming logger is defined, otherwise you can use print(f"Error: {e}")
+            logger.error(f"Error clearing queue: {e}")
+            
+        return await event.reply(
+            f"🛑 **Active Task Cancelled!**\n"
+            f"🗑️ **Cleared Queue:** `{cleared_count}` pending files removed."
+        )
         
     # Check for active Google Drive upload
     if reply_msg.id in active_gd_uploads:
@@ -1328,8 +1344,17 @@ async def search_handler(event):
                 link = f"https://t.me/c/{chat_id_str}/{msg.id}"
                 
                 # Construct a sensible starting filename
-                filename = getattr(msg.file, 'name', None)
-                if not filename:
+                raw_name = getattr(msg.file, 'name', None)
+                if raw_name:
+                    # Fix [Errno 36]: Cut off at the first occurrence of 2+ spaces or a newline
+                    clean_name = re.split(r'\s{2,}|\n', raw_name)[0].strip()
+                    
+                    # Ensure it retains an extension
+                    _, ext = os.path.splitext(clean_name)
+                    if not ext:
+                        clean_name += (msg.file.ext or '.mkv' if "0p" in clean_name.lower() else '.mka')
+                    filename = clean_name
+                else:
                     filename = f"Media_{msg.id}{msg.file.ext or '.mkv'}"
                     
                 # Prevent dictionary key overwrites if files share the exact same name
