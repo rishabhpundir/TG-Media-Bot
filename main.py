@@ -91,21 +91,10 @@ async def main():
             scope=BotCommandScopeDefault(),
             lang_code='',
             commands=[
-            BotCommand(command="cls", description="Clear Chat Messages"),
-            BotCommand(command="mv", description="Download file to Movies"),
-            BotCommand(command="lmv", description="Download file to Movies by internal tg link"),
-            BotCommand(command="mv2", description="Download file to Movies"),
-            BotCommand(command="tv", description="Download file to TV"),
-            BotCommand(command="ltv", description="Download file to TV by internal tg link"),
-            BotCommand(command="tv2", description="Download file to TV"),
-            BotCommand(command="docu", description="Download file to Documentaries"),
-            BotCommand(command="aria", description="Aria2c Download Manager"),
-            BotCommand(command="ytdl", description="YouTube-DL/M3U8 Downloader"),
-            BotCommand(command="gd", description="Upload to Google Drive"),
-            BotCommand(command="fm", description="File Manager"),
-            BotCommand(command="del", description="Delete Files"),
             BotCommand(command="cancel", description="Cancel Active Task"),
+            BotCommand(command="cls", description="Clear Chat Messages"),
             BotCommand(command="cmd", description="View Help Categories"),
+            BotCommand(command="del", description="Delete Files"),
             BotCommand(command="search", description="Search channel: /search <ID> (<keywords>) [limit]"),
         ]
         ))

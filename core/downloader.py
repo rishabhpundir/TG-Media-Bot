@@ -46,14 +46,21 @@ async def _reset_borrowed_senders(client):
             state = borrowed.pop(dc_id, None)
             if state is None:
                 continue
-            # Telethon's _ExportState stores the actual sender; attribute name
-            # varies slightly across versions, so probe both defensively.
             sender = getattr(state, 'sender', None) or getattr(state, '_sender', None)
-            if sender is not None:
-                try:
-                    await sender.disconnect()
-                except Exception as e:
-                    logger.debug(f"Sender disconnect during reset (ignored): {e}")
+            if sender is None:
+                continue
+            try:
+                # Mark disconnected first so any in-flight reconnect logic
+                # inside Telethon sees a terminal state and stops spawning
+                # new send/recv loop tasks.
+                sender._user_connected = False
+                await sender.disconnect()
+            except Exception as e:
+                logger.debug(f"Sender disconnect during reset (ignored): {e}")
+            # Let the cancelled send_loop/recv_loop tasks actually finish
+            # tearing down before we return — eliminates the
+            # "Task was destroyed but it is pending" warnings.
+            await asyncio.sleep(0.2)
 
 
 async def progress_bar(current, total, event, start_time, last_update_time, filename):
@@ -196,7 +203,7 @@ async def perform_download(status_msg, media_msg, folder_path, clean_name):
                         f"Resetting senders, retrying."
                     )
                     await status_msg.edit(
-                        f"⚠️ **Stalled — retrying ({attempt + 1}/{MAX_RETRIES})**\n"
+                        f"⚠️ **Stalled — retrying ({attempt + 1}/{MAX_RETRIES + 1})**\n"
                         f"`{clean_name}`\n"
                         f"💾 `{format_bytes(downloaded)} / {format_bytes(file_size)}`"
                     )
