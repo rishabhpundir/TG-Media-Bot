@@ -100,24 +100,33 @@ async def perform_download(status_msg, media_msg, folder_path, clean_name):
     try:
         # Open the file once to avoid high disk I/O overhead
         with open(temp_path, 'wb') as f:
+            # iter_download() is lazy — constructing it does NOT hit the network
+            # or the SQLite session. Only iteration triggers DC auth.
             chunk_generator = client.iter_download(media_msg.media, request_size=1048576)
-            
-            # Locks the SQLite DB exclusively for the 1st chunk to prevent collision deadlocks.
+
+            # ===== TURNSTILE LOCK =====
+            # Hold the lock for ONLY the first __anext__() call. That single call
+            # is what fires _borrow_exported_sender → DC auth handshake → SQLite
+            # write. Once one worker finishes it, Telethon caches the sender
+            # internally and the remaining workers pass straight through.
+            # Disk write + progress edit are intentionally OUTSIDE the lock
+            # so the contention window stays as tight as possible.
             async with dc_auth_lock:
-                async for first_chunk in chunk_generator:
-                    await asyncio.to_thread(sync_write, f, first_chunk)
-                    downloaded += len(first_chunk)
-                    await progress_bar(downloaded, file_size, status_msg, start_time, last_update, clean_name)
-                    break # Exit the lock instantly after securing the first chunk
-            
-            # Now process the remaining 99.9% of the file in full parallel
+                try:
+                    first_chunk = await anext(chunk_generator)
+                except StopAsyncIteration:
+                    first_chunk = None
+            # ===== LOCK RELEASED — sender is now cached for this DC =====
+
+            if first_chunk is not None:
+                await asyncio.to_thread(sync_write, f, first_chunk)
+                downloaded += len(first_chunk)
+                await progress_bar(downloaded, file_size, status_msg, start_time, last_update, clean_name)
+
+            # Remaining 99.9% of the file streams in TRUE parallel — zero lock contention.
             async for chunk in chunk_generator:
-                # Push the 1MB write to a background thread to protect the async loop
                 await asyncio.to_thread(sync_write, f, chunk)
                 downloaded += len(chunk)
-                
-                # Natively update UI without spamming task queues 
-                # (Your progress_bar handles the 3-second throttle natively)
                 await progress_bar(downloaded, file_size, status_msg, start_time, last_update, clean_name)
 
         os.rename(temp_path, final_path)
