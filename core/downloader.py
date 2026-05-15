@@ -104,16 +104,22 @@ async def perform_download(status_msg, media_msg, folder_path, clean_name):
             # or the SQLite session. Only iteration triggers DC auth.
             chunk_generator = client.iter_download(media_msg.media, request_size=1048576)
 
+            # First chunk: 45s budget covers DC reconnect + auth handshake worst-case.
+            FIRST_CHUNK_TIMEOUT = 45
+            CHUNK_TIMEOUT = 30
+
             # ===== TURNSTILE LOCK =====
-            # Hold the lock for ONLY the first __anext__() call. That single call
-            # is what fires _borrow_exported_sender → DC auth handshake → SQLite
-            # write. Once one worker finishes it, Telethon caches the sender
-            # internally and the remaining workers pass straight through.
-            # Disk write + progress edit are intentionally OUTSIDE the lock
-            # so the contention window stays as tight as possible.
             async with dc_auth_lock:
                 try:
-                    first_chunk = await anext(chunk_generator)
+                    first_chunk = await asyncio.wait_for(
+                        anext(chunk_generator), timeout=FIRST_CHUNK_TIMEOUT
+                    )
+                except asyncio.TimeoutError:
+                    raise ConnectionError(
+                        f"First-chunk timeout after {FIRST_CHUNK_TIMEOUT}s — "
+                        "borrowed sender for this DC is likely dead (TCP black hole). "
+                        "Restart the bot to force a fresh sender pool."
+                    )
                 except StopAsyncIteration:
                     first_chunk = None
             # ===== LOCK RELEASED — sender is now cached for this DC =====
@@ -123,8 +129,21 @@ async def perform_download(status_msg, media_msg, folder_path, clean_name):
                 downloaded += len(first_chunk)
                 await progress_bar(downloaded, file_size, status_msg, start_time, last_update, clean_name)
 
-            # Remaining 99.9% of the file streams in TRUE parallel — zero lock contention.
-            async for chunk in chunk_generator:
+            # Per-chunk watchdog: 30s of zero progress = stalled connection, bail out cleanly.
+            # Using explicit anext() instead of `async for` so we can wrap each pull in wait_for.
+            while True:
+                try:
+                    chunk = await asyncio.wait_for(
+                        anext(chunk_generator), timeout=CHUNK_TIMEOUT
+                    )
+                except asyncio.TimeoutError:
+                    raise ConnectionError(
+                        f"Chunk timeout after {CHUNK_TIMEOUT}s at {downloaded}/{file_size} bytes — "
+                        "stream stalled. The other 2 workers may still be progressing."
+                    )
+                except StopAsyncIteration:
+                    break
+
                 await asyncio.to_thread(sync_write, f, chunk)
                 downloaded += len(chunk)
                 await progress_bar(downloaded, file_size, status_msg, start_time, last_update, clean_name)
