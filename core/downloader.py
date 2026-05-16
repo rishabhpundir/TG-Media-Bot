@@ -1,7 +1,11 @@
 import os
+import json
 import time
 import asyncio
 import logging
+from datetime import datetime
+
+from telethon.errors import FileReferenceExpiredError
 
 from core.utils import format_bytes
 from config import MAX_CONCURRENT_DOWNLOADS
@@ -20,6 +24,81 @@ dc_auth_lock = asyncio.Lock()
 # workers from each tearing down the pool.
 _sender_reset_lock = asyncio.Lock()
 _sender_last_reset = 0.0
+
+
+# =================== DOWNLOAD LEDGER ===================
+# Tracks completed downloads by Telegram's permanent file_id (NOT filename,
+# NOT path) so duplicates are detected even after renames or moves.
+# Flat JSON dict, written atomically via tmp+rename to survive crashes.
+
+# Lives at project root, alongside main.py.
+DOWNLOAD_LEDGER_PATH = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.realpath(__file__))),
+    'download_ledger.json'
+)
+
+_ledger_lock = asyncio.Lock()
+_ledger_cache = None  # Lazy-loaded on first access; kept in sync with disk.
+
+
+def _get_file_uid(media_msg):
+    """
+    Stable Telegram-side identifier for the file. Works for documents
+    (videos, audio, generic files) and photos. Returns None for media
+    types we don't track (contact cards, polls, etc.).
+    """
+    media = getattr(media_msg, 'media', None)
+    if media is None:
+        return None
+    doc = getattr(media, 'document', None)
+    if doc is not None:
+        return f"doc:{doc.id}"
+    photo = getattr(media, 'photo', None)
+    if photo is not None:
+        return f"photo:{photo.id}"
+    return None
+
+
+def _ledger_load_sync():
+    """Sync read — must be called via asyncio.to_thread."""
+    if not os.path.exists(DOWNLOAD_LEDGER_PATH):
+        return {}
+    try:
+        with open(DOWNLOAD_LEDGER_PATH, 'r') as f:
+            data = json.load(f)
+            return data if isinstance(data, dict) else {}
+    except (json.JSONDecodeError, OSError) as e:
+        logger.warning(f"Ledger read failed ({e}); starting empty for this session.")
+        return {}
+
+
+def _ledger_save_sync(data):
+    """Sync write with atomic tmp+rename — must be called via asyncio.to_thread."""
+    tmp = DOWNLOAD_LEDGER_PATH + ".tmp"
+    with open(tmp, 'w') as f:
+        json.dump(data, f, indent=2)
+    os.replace(tmp, DOWNLOAD_LEDGER_PATH)
+
+
+async def _ledger_get(file_uid):
+    """Return ledger entry for a file UID, or None."""
+    global _ledger_cache
+    async with _ledger_lock:
+        if _ledger_cache is None:
+            _ledger_cache = await asyncio.to_thread(_ledger_load_sync)
+        return _ledger_cache.get(file_uid)
+
+
+async def _ledger_set(file_uid, entry):
+    """Record a completed download and flush to disk."""
+    global _ledger_cache
+    async with _ledger_lock:
+        if _ledger_cache is None:
+            _ledger_cache = await asyncio.to_thread(_ledger_load_sync)
+        _ledger_cache[file_uid] = entry
+        # Snapshot so the (slow) disk write can't race with future mutations.
+        snapshot = dict(_ledger_cache)
+        await asyncio.to_thread(_ledger_save_sync, snapshot)
 
 
 async def _reset_borrowed_senders(client):
@@ -128,15 +207,50 @@ async def perform_download(status_msg, media_msg, folder_path, clean_name):
     final_path = os.path.join(folder_path, clean_name)
     temp_path = final_path + ".part"
 
+    # ===== LEDGER DEDUP CHECK =====
+    # Keyed on Telegram's permanent file_id, so we catch re-downloads even
+    # if the user renamed/moved the file. If the ledger says we have it but
+    # the recorded path no longer exists, treat the entry as stale and
+    # proceed to re-download.
+    file_uid = _get_file_uid(media_msg)
+    if file_uid:
+        existing = await _ledger_get(file_uid)
+        if existing and os.path.exists(existing.get('path', '')):
+            await status_msg.edit(
+                f"⏭️ **Already downloaded — skipping**\n"
+                f"`{clean_name}`\n"
+                f"📂 Existing: `{existing['path']}`\n"
+                f"📅 On: `{existing.get('downloaded_at', 'unknown')}`"
+            )
+            return
+
     if os.path.exists(final_path):
         await status_msg.edit(f"❌ **Error:** File already exists.\n`{clean_name}`")
         return
+
+    client = media_msg._client
+
+    # ===== PROACTIVE FILE_REFERENCE REFRESH =====
+    # file_reference tokens expire after ~30-60 min. Queued items may have
+    # waited hours before reaching the worker, so re-fetch the source
+    # message right before starting to get a fresh reference + fresh TTL.
+    try:
+        refreshed = await client.get_messages(media_msg.peer_id, ids=media_msg.id)
+        if refreshed is None or refreshed.media is None:
+            await status_msg.edit(
+                f"❌ **Error:** Source message no longer available.\n`{clean_name}`"
+            )
+            return
+        media_msg = refreshed
+    except Exception as e:
+        # Refresh failure is non-fatal — try with the stale reference.
+        # If it has expired, the in-loop handler below will catch it.
+        logger.warning(f"Pre-download refresh failed for {clean_name}: {e}")
 
     start_time = time.time()
     last_update = [0]
     file_size = media_msg.file.size
     downloaded = 0
-    client = media_msg._client
 
     def sync_write(fd, data):
         fd.write(data)
@@ -191,6 +305,35 @@ async def perform_download(status_msg, media_msg, folder_path, clean_name):
                     # Empty file edge case (first __anext__ already empty).
                     break
 
+                except FileReferenceExpiredError:
+                    # Reference died mid-download (only happens for files
+                    # that take longer than the TTL — rare at single concurrency
+                    # but possible on very large files or slow links).
+                    logger.warning(
+                        f"File reference expired mid-download for {clean_name} "
+                        f"at {downloaded}/{file_size} bytes — refreshing."
+                    )
+                    await status_msg.edit(
+                        f"🔄 **Refreshing reference**\n"
+                        f"`{clean_name}`\n"
+                        f"💾 `{format_bytes(downloaded)} / {format_bytes(file_size)}`"
+                    )
+                    try:
+                        refreshed = await client.get_messages(
+                            media_msg.peer_id, ids=media_msg.id
+                        )
+                        if refreshed is None or refreshed.media is None:
+                            raise ConnectionError("Source message gone during refresh")
+                        media_msg = refreshed
+                    except FileReferenceExpiredError:
+                        # Should be impossible — re-raise to outer handler.
+                        raise
+                    except Exception as e:
+                        raise ConnectionError(f"Reference refresh failed: {e}")
+                    # No backoff, no sender reset — just loop again with the
+                    # fresh reference. Counts as one retry attempt; that's fine.
+                    continue
+
                 except asyncio.TimeoutError:
                     if attempt >= MAX_RETRIES:
                         raise ConnectionError(
@@ -216,6 +359,18 @@ async def perform_download(status_msg, media_msg, folder_path, clean_name):
                     await asyncio.sleep(2 * (attempt + 1))
 
         os.rename(temp_path, final_path)
+
+        # Record in ledger so future runs skip this file by Telegram file_id,
+        # regardless of where the user later moves or renames it on disk.
+        if file_uid:
+            await _ledger_set(file_uid, {
+                'filename': clean_name,
+                'path': final_path,
+                'size': os.path.getsize(final_path),
+                'downloaded_at': datetime.now().isoformat(timespec='seconds'),
+                'channel_id': getattr(media_msg, 'chat_id', None),
+                'message_id': media_msg.id,
+            })
 
         file_size_str = format_bytes(os.path.getsize(final_path))
         await status_msg.edit(
