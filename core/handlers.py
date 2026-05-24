@@ -19,7 +19,7 @@ from config import (DIRECTORIES, ALLOWED_USERS, MAX_FILE_SIZE_BYTES,
                     MAX_FILE_SIZE_GB, MAX_CONCURRENT_DOWNLOADS)
 from state import (queue, active_downloads, pending_deletions, 
                    pending_aria_actions, current_concurrent_count)
-from uploader.gdriveup import upload_single_target
+from gdrive.gdriveup import upload_single_target
 from telethon.tl.types import DocumentAttributeVideo
 
 
