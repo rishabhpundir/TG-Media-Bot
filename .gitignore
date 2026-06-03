@@ -223,3 +223,4 @@ logs/
 *ledger*
 *DS_Store*
 manifest.txt
+.python-version

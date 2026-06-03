@@ -2,31 +2,16 @@ import os
 import io
 import time
 import json
-from google.oauth2.credentials import Credentials
-from google_auth_oauthlib.flow import InstalledAppFlow
-from google.auth.transport.requests import Request
-from googleapiclient.discovery import build
+
 from googleapiclient.http import MediaIoBaseDownload
+
+from gdrive.auth import get_service
 
 SCOPES = ['https://www.googleapis.com/auth/drive']
 STATE_FILE = 'download_state.json'
 
 def authenticate():
-    creds = None
-    if os.path.exists('token.json'):
-        creds = Credentials.from_authorized_user_file('token.json', SCOPES)
-    
-    if not creds or not creds.valid:
-        if creds and creds.expired and creds.refresh_token:
-            creds.refresh(Request())
-        else:
-            flow = InstalledAppFlow.from_client_secrets_file(
-                'credentials.json', SCOPES)
-            creds = flow.run_local_server(port=0)
-        with open('token.json', 'w') as token:
-            token.write(creds.to_json())
-            
-    return build('drive', 'v3', credentials=creds)
+    return get_service(SCOPES)
 
 def format_size(bytes_size):
     """Converts bytes to a human-readable format."""

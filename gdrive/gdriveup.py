@@ -8,16 +8,13 @@ import http.client
 
 from tqdm import tqdm
 from dotenv import load_dotenv
-from googleapiclient.discovery import build
 from logging.handlers import RotatingFileHandler
 from googleapiclient.http import MediaFileUpload
-from google.oauth2.credentials import Credentials
-from google.auth.transport.requests import Request
-from google_auth_oauthlib.flow import InstalledAppFlow
 
-SCRIPT_DIR = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
+from gdrive.auth import get_service
 
 # --- LOGGING SETUP ---
+SCRIPT_DIR = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
 LOG_DIR = os.path.join(SCRIPT_DIR, 'logs')
 os.makedirs(LOG_DIR, exist_ok=True)
 LOG_FILE = os.path.join(LOG_DIR, 'gdrive_log.log')
@@ -131,22 +128,7 @@ def update_ledger(full_path, gid, is_folder):
 # Google Drive Interaction
 def authenticate():
     """Handles OAuth 2.0 authentication with Google Drive."""
-    creds = None
-    if os.path.exists(TOKEN_PATH):
-        creds = Credentials.from_authorized_user_file(TOKEN_PATH, SCOPES)
-    
-    if not creds or not creds.valid:
-        if creds and creds.expired and creds.refresh_token:
-            creds.refresh(Request())
-        else:
-            flow = InstalledAppFlow.from_client_secrets_file(
-                CREDS_PATH, SCOPES)
-            creds = flow.run_local_server(port=0)
-        with open(TOKEN_PATH, 'w') as token:
-            token.write(creds.to_json())
-            
-    return build('drive', 'v3', credentials=creds)
-
+    return get_service(SCOPES, token_path=TOKEN_PATH, creds_path=CREDS_PATH)
 
 def get_existing_item(service, name, parent_id, is_folder=False):
     """Searches for an existing file or folder by name within a specific parent."""

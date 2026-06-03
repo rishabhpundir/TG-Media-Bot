@@ -20,6 +20,7 @@ from config import (DIRECTORIES, ALLOWED_USERS, MAX_FILE_SIZE_BYTES,
 from state import (queue, active_downloads, pending_deletions, 
                    pending_aria_actions, current_concurrent_count)
 from gdrive.gdriveup import upload_single_target
+from gdrive.gd_stream import stream_url_to_drive
 from telethon.tl.types import DocumentAttributeVideo
 
 
@@ -1022,6 +1023,52 @@ async def cmd_handler(event):
         await event.reply(f"❌ **Unknown module:** `{module}`\nAvailable modules: `tgdl`, `aria`, `ytdl`, `gd`, `unzip`, `fm`, `misc`")
         
         
+async def _gd_stream_url(event, url):
+    """Direct streaming pass-through: URL -> Google Drive, nothing touches disk."""
+    target_name = url.split("/")[-1].split("?")[0] or "download"
+    status_msg = await event.reply(
+        f"🌊 **Streaming to Google Drive (no disk):**\n`{target_name}`\n\n*(Starting rclone...)*"
+    )
+
+    last_update = [0.0]
+
+    async def stream_progress(pct, line):
+        now = time.time()
+        if (now - last_update[0]) < 3 and pct < 100:
+            return
+        last_update[0] = now
+        blocks = pct // 10
+        bar = "🟦" * blocks + "⬜" * (10 - blocks)
+        try:
+            await status_msg.edit(
+                f"🌊 **Streaming to Drive:** `{target_name}`\n"
+                f"{bar} **{pct}%**\n"
+                f"`{line}`"
+            )
+        except Exception:
+            pass  # ignore Telegram "not modified" errors
+
+    global active_gd_uploads
+    cancel_flag = {"cancelled": False}
+    active_gd_uploads[status_msg.id] = cancel_flag
+
+    try:
+        await stream_url_to_drive(url, stream_progress, cancel_flag)
+        await status_msg.edit(
+            f"✅ **Streamed to Google Drive!**\n☁️ `{target_name}`\n🔗 `{url}`"
+        )
+    except Exception as e:
+        if cancel_flag.get("cancelled"):
+            await status_msg.edit(f"🛑 **Stream Cancelled:**\n`{target_name}`")
+            logger.info("GD stream cancelled: %s", url)
+        else:
+            logger.exception("GD stream error: %s", e)
+            await status_msg.edit(f"❌ **Stream Failed:**\n`{str(e)}`")
+    finally:
+        if status_msg.id in active_gd_uploads:
+            del active_gd_uploads[status_msg.id]
+        
+        
 async def gd_handler(event):
     if event.sender_id not in ALLOWED_USERS:
         return
@@ -1044,10 +1091,17 @@ async def gd_handler(event):
     if args_str:
         try:
             args = shlex.split(args_str)
-            if args:
-                filepath = resolve_path(args[0])
         except ValueError as e:
             return await event.reply(f"❌ **Parse Error:** Check your quotes.\n`{str(e)}`")
+
+        # --- streaming pass-through:  /gd x <direct download link> ---
+        if args and args[0].lower() == 'x':
+            if len(args) < 2:
+                return await event.reply("❌ **Usage:** `/gd x <direct download link>`")
+            return await _gd_stream_url(event, args[1])
+
+        if args:
+            filepath = resolve_path(args[0])
 
     # SCENARIO 2: Reply to a completed download message
     elif event.is_reply:
