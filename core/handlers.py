@@ -59,6 +59,7 @@ Here is your current command list:
 ☁️ **Google Drive Upload (`/gd`):**
 `/gd` - Reply to a completed download message to upload it.
 `/gd "<dir_key>/<name>"` - Directly upload a file/folder (e.g., `/gd "tv/Breaking Bad"`).
+`/gd x <link> [filename.ext]` - Stream a direct link straight to Drive (never touches disk).
 
 🗄️ **File Manager (`/fm`):**
 `/fm ls` - List base directories.
@@ -993,7 +994,10 @@ async def cmd_handler(event):
                 
         "gd":   "☁️ **Google Drive (`gd`)**\n\n"
                 "`/gd` - Upload a completed download to Drive.\n*Example:* Reply to a download success message with `/gd`\n\n"
-                "`/gd \"<dir_key>/<name>\"` - Directly upload a specific file/folder.\n*Example:* `/gd \"tv/Breaking Bad\"`",
+                "`/gd \"<dir_key>/<name>\"` - Directly upload a specific file/folder.\n*Example:* `/gd \"tv/Breaking Bad\"`\n\n"
+                "`/gd x <link> [filename.ext]` - Stream a direct download link straight to Drive without saving to disk.\n"
+                "*Example:* `/gd x https://host/file.mkv`\n"
+                "*(Optional filename forces a name when the link can't supply one. Best for clean direct links; use `/aria` for cookie/login-gated ones.)*",
 
         "unzip": "🗜️ **Archive Management (`unzip`)**\n\n"
                  "`/unzip` - Extract archive in place.\n*Example:* Reply to completed download with `/unzip`\n\n"
@@ -1023,39 +1027,64 @@ async def cmd_handler(event):
         await event.reply(f"❌ **Unknown module:** `{module}`\nAvailable modules: `tgdl`, `aria`, `ytdl`, `gd`, `unzip`, `fm`, `misc`")
         
         
-async def _gd_stream_url(event, url):
+async def _gd_stream_url(event, url, filename=None):
     """Direct streaming pass-through: URL -> Google Drive, nothing touches disk."""
-    target_name = url.split("/")[-1].split("?")[0] or "download"
+    target_name = filename or url.split("/")[-1].split("?")[0] or "download"
     status_msg = await event.reply(
         f"🌊 **Streaming to Google Drive (no disk):**\n`{target_name}`\n\n*(Starting rclone...)*"
     )
 
-    last_update = [0.0]
+    start_time = time.time()
+    state = {"body": None, "pct": None}
 
-    async def stream_progress(pct, line):
-        now = time.time()
-        if (now - last_update[0]) < 3 and pct < 100:
-            return
-        last_update[0] = now
-        blocks = pct // 10
-        bar = "🟦" * blocks + "⬜" * (10 - blocks)
-        try:
-            await status_msg.edit(
-                f"🌊 **Streaming to Drive:** `{target_name}`\n"
-                f"{bar} **{pct}%**\n"
-                f"`{line}`"
-            )
-        except Exception:
-            pass  # ignore Telegram "not modified" errors
+    def fmt_elapsed():
+        secs = int(time.time() - start_time)
+        h, rem = divmod(secs, 3600)
+        m, s = divmod(rem, 60)
+        if h:
+            return f"{h}h{m:02d}m{s:02d}s"
+        return f"{m}m{s:02d}s" if m else f"{s}s"
+
+    def render():
+        elapsed = fmt_elapsed()
+        if state["body"] is None:
+            return (f"🌊 **Streaming to Drive:** `{target_name}`\n"
+                    f"⏳ Connecting & transferring... (elapsed `{elapsed}`)")
+        if state["pct"] is None:
+            head = "🌊 *transferring (total size unknown)*"
+        else:
+            blocks = state["pct"] // 10
+            head = "🟦" * blocks + "⬜" * (10 - blocks) + f" **{state['pct']}%**"
+        return (f"🌊 **Streaming to Drive:** `{target_name}`\n"
+                f"{head}\n"
+                f"⏳ elapsed `{elapsed}`\n"
+                f"`{state['body']}`")
+
+    async def stream_progress(pct, body):
+        # Just record the latest stats; the heartbeat task does the editing.
+        state["body"] = body
+        state["pct"] = pct
+
+    async def heartbeat():
+        # Edits on a fixed 5s cadence regardless of rclone's output, so elapsed
+        # time always ticks even before/without any "Transferred:" line.
+        while True:
+            await asyncio.sleep(10)
+            try:
+                await status_msg.edit(render())
+            except Exception:
+                pass  # ignore "not modified" / transient flood errors
 
     global active_gd_uploads
     cancel_flag = {"cancelled": False}
     active_gd_uploads[status_msg.id] = cancel_flag
 
+    hb_task = asyncio.create_task(heartbeat())
     try:
-        await stream_url_to_drive(url, stream_progress, cancel_flag)
+        await stream_url_to_drive(url, stream_progress, cancel_flag, filename=filename)
         await status_msg.edit(
-            f"✅ **Streamed to Google Drive!**\n☁️ `{target_name}`\n🔗 `{url}`"
+            f"✅ **Streamed to Google Drive!**\n☁️ `{target_name}`\n"
+            f"⏳ took `{fmt_elapsed()}`\n🔗 `{url}`"
         )
     except Exception as e:
         if cancel_flag.get("cancelled"):
@@ -1065,6 +1094,7 @@ async def _gd_stream_url(event, url):
             logger.exception("GD stream error: %s", e)
             await status_msg.edit(f"❌ **Stream Failed:**\n`{str(e)}`")
     finally:
+        hb_task.cancel()
         if status_msg.id in active_gd_uploads:
             del active_gd_uploads[status_msg.id]
         
@@ -1094,11 +1124,12 @@ async def gd_handler(event):
         except ValueError as e:
             return await event.reply(f"❌ **Parse Error:** Check your quotes.\n`{str(e)}`")
 
-        # --- streaming pass-through:  /gd x <direct download link> ---
+        # --- streaming pass-through:  /gd x <direct download link> [filename] ---
         if args and args[0].lower() == 'x':
             if len(args) < 2:
-                return await event.reply("❌ **Usage:** `/gd x <direct download link>`")
-            return await _gd_stream_url(event, args[1])
+                return await event.reply("❌ **Usage:** `/gd x <direct download link> [filename.ext]`")
+            opt_name = args[2] if len(args) > 2 else None
+            return await _gd_stream_url(event, args[1], filename=opt_name)
 
         if args:
             filepath = resolve_path(args[0])

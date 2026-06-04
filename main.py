@@ -95,6 +95,7 @@ async def main():
             BotCommand(command="cls", description="Clear Chat Messages"),
             BotCommand(command="cmd", description="View Help Categories"),
             BotCommand(command="del", description="Delete Files"),
+            BotCommand(command="gd", description="Drive upload | stream a link: /gd x <link>"),
             BotCommand(command="search", description="Search channel: /search <ID> (<keywords>) [limit]"),
         ]
         ))
