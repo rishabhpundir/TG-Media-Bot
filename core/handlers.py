@@ -1084,7 +1084,7 @@ async def _gd_stream_url(event, url, filename=None):
         await stream_url_to_drive(url, stream_progress, cancel_flag, filename=filename)
         await status_msg.edit(
             f"✅ **Streamed to Google Drive!**\n☁️ `{target_name}`\n"
-            f"⏳ took `{fmt_elapsed()}`\n🔗 `{url}`"
+            f"⏳ took `{fmt_elapsed()}`"
         )
     except Exception as e:
         if cancel_flag.get("cancelled"):
