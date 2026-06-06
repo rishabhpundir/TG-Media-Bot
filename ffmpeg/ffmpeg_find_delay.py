@@ -4,6 +4,8 @@ import subprocess
 import numpy as np
 from scipy.signal import correlate
 
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+
 if len(sys.argv) != 3:
     sys.stderr.write("Usage: python find_delay.py <file1.mkv> <file2.mkv>\n")
     sys.exit(1)
@@ -11,8 +13,8 @@ if len(sys.argv) != 3:
 file_1 = sys.argv[1]
 file_2 = sys.argv[2]
 
-wav_1 = "temp_1.wav"
-wav_2 = "temp_2.wav"
+wav_1 = os.path.join(SCRIPT_DIR, "temp_1.wav")
+wav_2 = os.path.join(SCRIPT_DIR, "temp_2.wav")
 
 # Added -vn, -sn, and -dn to force FFmpeg to completely ignore the heavy 4K HDR video streams
 subprocess.run(['ffmpeg', '-y', '-ss', '00:10:00', '-i', file_1, '-t', '00:05:00', '-map', '0:a:0', '-vn', '-sn', '-dn', '-ar', '16000', '-ac', '1', wav_1], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
