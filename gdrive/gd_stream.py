@@ -1,6 +1,7 @@
 import os
 import re
 import shlex
+import base64
 import asyncio
 import logging
 from urllib.parse import urlsplit, unquote
@@ -32,7 +33,7 @@ def derive_filename(url):
     return None
 
 
-async def stream_url_to_drive(url, status_callback=None, cancel_flag=None, filename=None):
+async def stream_url_to_drive(url, status_callback=None, cancel_flag=None, filename=None, username=None, password=None):
     """Stream a direct-download URL straight into Google Drive via `rclone copyurl`.
 
     No bytes touch local disk. status_callback(pct, body) is awaited per stats
@@ -61,6 +62,13 @@ async def stream_url_to_drive(url, status_callback=None, cancel_flag=None, filen
         "--stats-one-line",
         "-v",
     ]
+    
+    # Conditionally inject Basic Auth headers if credentials are provided
+    if username and password:
+        auth_str = f"{username}:{password}"
+        b64_auth = base64.b64encode(auth_str.encode('utf-8')).decode('utf-8')
+        cmd.extend(["--header", f"Authorization: Basic {b64_auth}"])
+        
     if RCLONE_EXTRA_ARGS.strip():
         cmd += shlex.split(RCLONE_EXTRA_ARGS)
 

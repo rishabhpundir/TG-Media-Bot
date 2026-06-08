@@ -43,18 +43,22 @@ def parse_args():
                         "Shorter = faster; must exceed the expected delay.")
     p.add_argument("--rate", type=int, default=16000,
                    help="Resample rate in Hz (default 16000).")
+    p.add_argument("--a1", type=int, default=0,
+                   help="Audio stream index for file1 (default 0).")
+    p.add_argument("--a2", type=int, default=0,
+                   help="Audio stream index for file2 (default 0).")
     return p.parse_args()
 
 
-def extract_audio(input_file, output_wav, start, dur, rate, label):
-    log(f"{label}: extracting {dur}s of audio from {start} ...")
+def extract_audio(input_file, output_wav, start, dur, rate, stream_idx, label):
+    log(f"{label}: extracting {dur}s of audio stream {stream_idx} from {start} ...")
     t0 = time.time()
     # -ss BEFORE -i = fast input seek. -nostdin avoids stdin stalls.
     # If THIS step is the slow one, the file's seek index is bad/missing.
     result = subprocess.run(
         ["ffmpeg", "-nostdin", "-y", "-loglevel", "error",
          "-ss", start, "-i", input_file, "-t", str(dur),
-         "-map", "0:a:0", "-vn", "-sn", "-dn",
+         "-map", f"0:a:{stream_idx}", "-vn", "-sn", "-dn",
          "-ar", str(rate), "-ac", "1", output_wav],
         stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True,
     )
@@ -89,8 +93,8 @@ def main():
     wav_1 = os.path.join(SCRIPT_DIR, "temp_1.wav")
     wav_2 = os.path.join(SCRIPT_DIR, "temp_2.wav")
 
-    extract_audio(file_1, wav_1, args.start, args.dur, args.rate, "File 1")
-    extract_audio(file_2, wav_2, args.start, args.dur, args.rate, "File 2")
+    extract_audio(file_1, wav_1, args.start, args.dur, args.rate, args.a1, "File 1")
+    extract_audio(file_2, wav_2, args.start, args.dur, args.rate, args.a2, "File 2")
 
     log("Loading audio into RAM...")
     rate_1, audio_1 = load_audio(wav_1)

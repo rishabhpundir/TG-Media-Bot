@@ -1027,7 +1027,7 @@ async def cmd_handler(event):
         await event.reply(f"❌ **Unknown module:** `{module}`\nAvailable modules: `tgdl`, `aria`, `ytdl`, `gd`, `unzip`, `fm`, `misc`")
         
         
-async def _gd_stream_url(event, url, filename=None):
+async def _gd_stream_url(event, url, filename=None, username=None, password=None):
     """Direct streaming pass-through: URL -> Google Drive, nothing touches disk."""
     target_name = filename or url.split("/")[-1].split("?")[0] or "download"
     status_msg = await event.reply(
@@ -1081,7 +1081,9 @@ async def _gd_stream_url(event, url, filename=None):
 
     hb_task = asyncio.create_task(heartbeat())
     try:
-        await stream_url_to_drive(url, stream_progress, cancel_flag, filename=filename)
+        await stream_url_to_drive(url, stream_progress, cancel_flag, 
+                                  filename=filename, username=username, 
+                                  password=password)
         await status_msg.edit(
             f"✅ **Streamed to Google Drive!**\n☁️ `{target_name}`\n"
             f"⏳ took `{fmt_elapsed()}`"
@@ -1124,12 +1126,31 @@ async def gd_handler(event):
         except ValueError as e:
             return await event.reply(f"❌ **Parse Error:** Check your quotes.\n`{str(e)}`")
 
-        # --- streaming pass-through:  /gd x <direct download link> [filename] ---
+        # --- streaming pass-through:  /gd x <direct download link> [filename] [-u username] [-p password] ---
         if args and args[0].lower() == 'x':
             if len(args) < 2:
-                return await event.reply("❌ **Usage:** `/gd x <direct download link> [filename.ext]`")
-            opt_name = args[2] if len(args) > 2 else None
-            return await _gd_stream_url(event, args[1], filename=opt_name)
+                return await event.reply("❌ **Usage:** `/gd x <direct download link> [filename.ext] [-u user] [-p pass]`")
+            
+            url = args[1]
+            opt_name = None
+            username = None
+            password = None
+            
+            i = 2
+            while i < len(args):
+                if args[i] == "-u" and i + 1 < len(args):
+                    username = args[i+1]
+                    i += 2
+                elif args[i] == "-p" and i + 1 < len(args):
+                    password = args[i+1]
+                    i += 2
+                elif opt_name is None and not args[i].startswith("-"):
+                    opt_name = args[i]
+                    i += 1
+                else:
+                    i += 1
+
+            return await _gd_stream_url(event, url, filename=opt_name, username=username, password=password)
 
         if args:
             filepath = resolve_path(args[0])
