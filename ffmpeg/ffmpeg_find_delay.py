@@ -3,7 +3,7 @@
 Find the audio delay of file_2 relative to file_1 via cross-correlation.
 
 Usage:
-    python ffmpeg_find_delay.py <file1> <file2>
+    python ffmpeg_find_delay.py video1.mkv video2.mkv --a1 0 --a2 1
         [--start HH:MM:SS] [--dur SECONDS] [--rate HZ]
 
 Notes:

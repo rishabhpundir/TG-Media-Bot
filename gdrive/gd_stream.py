@@ -4,7 +4,7 @@ import shlex
 import base64
 import asyncio
 import logging
-from urllib.parse import urlsplit, unquote
+from urllib.parse import urlsplit, urlunsplit, unquote, quote
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +33,31 @@ def derive_filename(url):
     return None
 
 
+def _inject_basic_auth(url, username, password):
+    """Embed HTTP Basic credentials in the URL userinfo (percent-encoded).
+
+    Scopes the auth to the source GET request only. rclone's global --header
+    flag would instead attach the header to *every* transaction — including the
+    Google Drive API calls — which overwrites rclone's OAuth Bearer token and
+    yields a 403 'unregistered callers' error.
+    """
+    parts = urlsplit(url)
+    host = parts.netloc.rsplit('@', 1)[-1]          # drop any existing userinfo
+    netloc = f"{quote(username, safe='')}:{quote(password, safe='')}@{host}"
+    return urlunsplit((parts.scheme, netloc, parts.path, parts.query, parts.fragment))
+
+
+def _redact_url(arg):
+    """Mask credentials in a URL userinfo so they don't end up in the logs."""
+    if "://" not in arg:
+        return arg
+    parts = urlsplit(arg)
+    if "@" not in parts.netloc:
+        return arg
+    host = parts.netloc.rsplit('@', 1)[-1]
+    return urlunsplit((parts.scheme, f"***:***@{host}", parts.path, parts.query, parts.fragment))
+
+
 async def stream_url_to_drive(url, status_callback=None, cancel_flag=None, filename=None, username=None, password=None):
     """Stream a direct-download URL straight into Google Drive via `rclone copyurl`.
 
@@ -43,13 +68,15 @@ async def stream_url_to_drive(url, status_callback=None, cancel_flag=None, filen
     if not TARGET_DRIVE_FOLDER_ID:
         raise Exception("TARGET_DRIVE_FOLDER_ID is not set in .env")
 
-    # Destination name strategy:
-    #   1. explicit filename (user-supplied)  -> pass as dest, no auto/header flags
-    #   2. derivable from the URL path         -> pass as dest, no auto/header flags
-    #   3. neither                              -> let rclone read it from headers
     name = filename or derive_filename(url)
 
-    cmd = [RCLONE_BIN, "copyurl", url]
+    # Basic auth for the SOURCE only: embed it in the URL userinfo so it rides
+    # on the source GET request and never leaks onto the Drive API calls.
+    fetch_url = url
+    if username and password:
+        fetch_url = _inject_basic_auth(url, username, password)
+
+    cmd = [RCLONE_BIN, "copyurl", fetch_url]
     if name:
         cmd.append(f"{RCLONE_REMOTE}:{name}")
     else:
@@ -62,17 +89,12 @@ async def stream_url_to_drive(url, status_callback=None, cancel_flag=None, filen
         "--stats-one-line",
         "-v",
     ]
-    
-    # Conditionally inject Basic Auth headers if credentials are provided
-    if username and password:
-        auth_str = f"{username}:{password}"
-        b64_auth = base64.b64encode(auth_str.encode('utf-8')).decode('utf-8')
-        cmd.extend(["--header", f"Authorization: Basic {b64_auth}"])
-        
     if RCLONE_EXTRA_ARGS.strip():
         cmd += shlex.split(RCLONE_EXTRA_ARGS)
 
-    logger.info("rclone stream start (%s): %s", name or "auto-name", " ".join(cmd))
+    # Redact any embedded credentials before logging.
+    safe_cmd = " ".join(_redact_url(a) for a in cmd)
+    logger.info("rclone stream start (%s): %s", name or "auto-name", safe_cmd)
     proc = await asyncio.create_subprocess_exec(
         *cmd,
         stdout=asyncio.subprocess.PIPE,
