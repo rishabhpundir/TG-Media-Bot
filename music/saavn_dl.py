@@ -1,30 +1,79 @@
+"""
+Automated MP3 Downloader & FFmpeg Converter
+
+This script interfaces with a local music API to download high-quality (320kbps) audio tracks,
+converts them to universally playable MP3s via FFmpeg, and maintains a local JSON ledger of downloads.
+It includes intelligent filtering to skip renditions (lofi/covers/remixes) and defaults to original tracks.
+
+REQUIREMENTS:
+To run this script in batch mode, you must have a text file (default: 'songs_list.txt') where 
+each line contains a single song name or lyric snippet (e.g., "Tum Hi Ho - Aashiqui 2 (2013)"). 
+The script will actively update this file with '✅' (Success) or '⚠️' (Failed/Not Found) markers.
+
+USAGE EXAMPLES:
+
+1. Batch Download Mode (Using a text file)
+   Run the jiosaavn API in a terminal:
+   $ python api/app.py
+   Then, in another terminal, run the script to process the default 'songs_list.txt' file:
+   $ python saavn_dl.py
+   
+   To use a custom text file, use the -f or --file flag:
+   $ python saavn_dl.py -f my_custom_playlist.txt
+
+2. Direct Single Query Mode (Using argparse)
+   Pass a specific song name directly in the terminal to bypass the text file 
+   and download just that single track:
+   $ python saavn_dl.py "Tum Hi Ho (2013)"
+"""
+
 import re
 import os
 import sys
 import html
 import json
 import time
+import shutil
 import random
 import logging
 import argparse
 import requests
 import subprocess
+
 from pathlib import Path
+from logging.handlers import RotatingFileHandler
 
 from dotenv import load_dotenv
 
 load_dotenv()
 
-# --- Configuration ---
-logger = logging.getLogger(__name__)
 OUTPUT_DIR = "output"
-LEDGER_FILE = "saavn_download_ledger.json"
+LEDGER_FILE = "output/saavn_download_ledger.json"
 TEMP_DIR = "temp"
 API_BASE_URL = os.getenv("MUSIC_API_BASE_URL")
+MP3_CONVERT = os.getenv("MUSIC_MP3_CONVERT", "true").lower() == "true"
 
 # Ensure directories exist
 Path(OUTPUT_DIR).mkdir(parents=True, exist_ok=True)
 Path(TEMP_DIR).mkdir(parents=True, exist_ok=True)
+
+# --- Log Configuration ---
+MUSIC_LOG_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.realpath(__file__))), 'logs')
+os.makedirs(MUSIC_LOG_DIR, exist_ok=True)
+LOG_FILE = os.path.join(MUSIC_LOG_DIR, 'music_logs.log')
+
+logging.basicConfig(
+    level=logging.INFO, # Change to logging.DEBUG for deeper troubleshooting
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    handlers=[
+        # Max file size of 5MB. Keeps exactly 1 older backup file.
+        RotatingFileHandler(LOG_FILE, maxBytes=5*1024*1024, backupCount=1, encoding="utf-8"), 
+        logging.StreamHandler(sys.stdout) # Prints to console
+    ]
+)
+
+logger = logging.getLogger(__name__)
+
 
 def load_ledger():
     """Loads the progress ledger to resume interrupted jobs."""
@@ -71,36 +120,43 @@ def download_and_convert(url, final_filepath):
         for chunk in response.iter_content(chunk_size=8192):
             f.write(chunk)
             
-    # 2. Convert via FFmpeg (Force 320k bitrate, 44100Hz sample rate, MP3 codec)
-    command = [
-        'ffmpeg', '-y',        # Overwrite output files
-        '-i', temp_filepath,   # Input file
-        '-vn',                 # Disable video stream (if any embedded covers exist)
-        '-c:a', 'libmp3lame',  # Specify MP3 encoder
-        '-b:a', '320k',        # Constant Bitrate (CBR) at 320kbps
-        '-ar', '44100',        # Set sample rate to 44.1 kHz
-        final_filepath
-    ]
-    
-    # Run FFmpeg silently
-    subprocess.run(command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
-    
-    # 3. Clean up the temporary raw file
-    if os.path.exists(temp_filepath):
-        os.remove(temp_filepath)
+    # 2. Convert via FFmpeg OR keep original
+    if MP3_CONVERT:
+        command = [
+            'ffmpeg', '-y',        # Overwrite output files
+            '-i', temp_filepath,   # Input file
+            '-vn',                 # Disable video stream (if any embedded covers exist)
+            '-c:a', 'libmp3lame',  # Specify MP3 encoder
+            '-b:a', '320k',        # Constant Bitrate (CBR) at 320kbps
+            '-ar', '44100',        # Set sample rate to 44.1 kHz
+            final_filepath
+        ]
+        
+        # Run FFmpeg silently
+        subprocess.run(command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
+        
+        # 3. Clean up the temporary raw file
+        if os.path.exists(temp_filepath):
+            os.remove(temp_filepath)
+    else:
+        # Bypass FFmpeg and just move the raw downloaded file to the final destination
+        shutil.move(temp_filepath, final_filepath)
         
     # Return file size in MB
     return round(os.path.getsize(final_filepath) / (1024 * 1024), 2)
 
-def remove_line_from_file(file_path, line_to_remove):
-    """Removes a successfully downloaded song line from the input text file."""
+def update_line_status(file_path, original_query, status_marker):
+    """Appends a status marker to a specific line in the text file."""
     if not file_path or not os.path.exists(file_path): 
         return
     with open(file_path, "r", encoding="utf-8") as f:
         lines = f.readlines()
     with open(file_path, "w", encoding="utf-8") as f:
         for line in lines:
-            if line.strip() != line_to_remove:
+            # Append marker only to the exact unmatched query line to avoid double tagging
+            if line.strip() == original_query:
+                f.write(f"{status_marker} {line.rstrip()}\n")
+            else:
                 f.write(line)
 
 def get_original_song(results, query):
@@ -177,7 +233,9 @@ def process_songs(queries, list_file_path=None):
                 song = get_original_song(results, query)
                 
                 if not song:
-                    print(f"❌ Original song not found for '{query}' (all results were renditions/remixes).")
+                    logger.info(f"❌ Original song not found for '{query}' (all results were renditions/remixes).")
+                    if list_file_path:
+                        update_line_status(list_file_path, query, "⚠️ -")
                     continue
                 
                 # Extract Metadata mapped to the local API's keys
@@ -205,7 +263,10 @@ def process_songs(queries, list_file_path=None):
                 safe_title = sanitize_filename(title)
                 safe_singers = sanitize_filename(singers)
                 safe_album = sanitize_filename(album)
-                filename = f"{safe_title} - {safe_singers} - {safe_album} ({year}).mp3"
+                
+                # Assign extension based on .env configuration
+                ext = ".mp3" if MP3_CONVERT else ".m4a"
+                filename = f"{safe_title} - {safe_singers} - {safe_album} ({year}){ext}"
                 filepath = os.path.join(OUTPUT_DIR, filename)
                 
                 logger.info(f"⬇️ Downloading: {filename}")
@@ -222,11 +283,11 @@ def process_songs(queries, list_file_path=None):
                     "original_download_url": best_url
                 }
                 save_to_ledger(ledger)
-                print(f"✅ Success. Saved to ledger.")
+                logger.info(f"✅ Success. Saved to ledger.")
                 
-                # Delete the line from the list file to track dual-progress
+                # Mark the line as successful in the list file to track dual-progress
                 if list_file_path:
-                    remove_line_from_file(list_file_path, query)
+                    update_line_status(list_file_path, query, "✅ -")
                 
                 download_count += 1
                 
@@ -241,10 +302,14 @@ def process_songs(queries, list_file_path=None):
                     time.sleep(sleep_time)
 
             else:
-                logger.warning(f"❌ No results found for '{query}'.")
+                logger.info(f"❌ No results found for '{query}'.")
+                if list_file_path:
+                    update_line_status(list_file_path, query, "⚠️ -")
                 
         except Exception as e:
             logger.exception(f"⚠️ Error processing '{query}': {e}")
+            if list_file_path:
+                update_line_status(list_file_path, query, "⚠️ -")
         
             
 if __name__ == "__main__":
@@ -277,7 +342,7 @@ if __name__ == "__main__":
     else:
         if os.path.exists(args.file):
             logger.info(f"🚀 Starting batch download pipeline from '{args.file}'...")
-            
+            queries_list = []
             with open(args.file, 'r', encoding='utf-8') as f:
                 # Safely parse the file, dropping empty lines and source markers (e.g., )
                 queries_list = [line.strip() for line in f if line.strip() and not line.startswith(' ')]

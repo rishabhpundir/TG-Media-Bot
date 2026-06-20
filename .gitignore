@@ -322,5 +322,5 @@ logs/
 *DS_Store*
 manifest.txt
 .python-version
-output/
+*output
 temp/

@@ -13,7 +13,8 @@ def search_for_song(query, lyrics, songdata):
 
     search_base_url = endpoints.search_base_url+query
     response = requests.get(search_base_url).text.encode().decode('unicode-escape')
-    pattern = r'\(From "([^"]+)"\)'
+    # pattern = r'\(From "([^"]+)"\)'
+    pattern = r'\(From "([^"]+)"([^)]*)\)'
     response = json.loads(re.sub(pattern, r"(From '\1')", response))
     song_response = response['songs']['data']
     if not songdata:
