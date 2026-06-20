@@ -11,7 +11,7 @@ from dotenv import load_dotenv
 from logging.handlers import RotatingFileHandler
 from googleapiclient.http import MediaFileUpload
 
-from gdrive.auth import get_service
+from auth import get_service
 
 # --- LOGGING SETUP ---
 SCRIPT_DIR = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
