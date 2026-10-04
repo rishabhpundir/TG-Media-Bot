@@ -16,7 +16,8 @@ import video.yt_dl as ytdl
 from core.aria_core import aria2_request, aria2_progress_tracker
 from core.utils import format_bytes, sanitize_filename, ensure_mkv_extension
 from config import (DIRECTORIES, ALLOWED_USERS, MAX_FILE_SIZE_BYTES, 
-                    MAX_FILE_SIZE_GB, MAX_CONCURRENT_DOWNLOADS)
+                    MAX_FILE_SIZE_GB, MAX_CONCURRENT_DOWNLOADS,
+                    DRIVE_FOLDERS, drive_target_for_key, drive_target_for_path)
 from state import (queue, active_downloads, pending_deletions, 
                    pending_aria_actions, current_concurrent_count)
 from gdrive.gdriveup import upload_single_target
@@ -41,6 +42,8 @@ Here is your current command list:
 📥 **Downloads:**
 `/mv` / `/mv2` - Reply to file -> Save to Movies.
 `/tv` / `/tv2` - Reply to file -> Save to TV.
+`/mv gd` / `/tv gd` - Download, then auto-upload to Drive (`1#movies` / `2#tv`).
+`/mv gd del` / `/tv gd del` - Same, then delete the local copy after upload.
 `/docu` - Reply to file -> Save to Documentaries.
 `/lmv <link>` / `/lmv2 <link>` - Fetch restricted link -> Movies.
 `/ltv <link>` / `/ltv2 <link>` - Fetch restricted link -> TV.
@@ -57,9 +60,9 @@ Here is your current command list:
 *(Reply to a manifest .txt file to batch process)*
 
 ☁️ **Google Drive Upload (`/gd`):**
-`/gd` - Reply to a completed download message to upload it.
-`/gd "<dir_key>/<name>"` - Directly upload a file/folder (e.g., `/gd "tv/Breaking Bad"`).
-`/gd x <link> [filename.ext]` - Stream a direct link straight to Drive (never touches disk).
+`/gd` - Reply to a completed download message to upload it (folder auto-detected).
+`/gd <mv|tv> "<name>"` - Upload from that local dir (e.g., `/gd tv "Breaking Bad"`).
+`/gd x <mv|tv> <link> [filename.ext]` - Stream a direct link straight to Drive (never touches disk).
 
 🗄️ **File Manager (`/fm`):**
 `/fm ls` - List base directories.
@@ -440,6 +443,13 @@ async def cancel_handler(event):
         return
     reply_msg = await event.get_reply_message()
     
+    # Drive upload is checked FIRST: a post-download auto-upload shares its
+    # status_msg.id with the still-alive download task. Cancelling the task
+    # would orphan the upload thread, so signal the flag instead.
+    if reply_msg.id in active_gd_uploads:
+        active_gd_uploads[reply_msg.id]["cancelled"] = True
+        return await event.reply("🛑 Signalling Drive Upload to abort...")
+    
     # Check for active download task
     task = active_downloads.get(reply_msg.id)
     if task:
@@ -461,11 +471,6 @@ async def cancel_handler(event):
             f"🛑 **Active Task Cancelled!**\n"
             f"🗑️ **Cleared Queue:** `{cleared_count}` pending files removed."
         )
-        
-    # Check for active Google Drive upload
-    if reply_msg.id in active_gd_uploads:
-        active_gd_uploads[reply_msg.id]["cancelled"] = True
-        return await event.reply("🛑 Signalling Drive Upload to abort...")
         
     # Check for pending deletion confirmation
     if reply_msg.id in pending_deletions:
@@ -616,7 +621,29 @@ async def delete_handler(event):
 async def standard_handler(event):
     if event.sender_id not in ALLOWED_USERS:
         return
-    
+
+    cmd = f"/{event.pattern_match.group(1).lower()}"
+    args = (event.pattern_match.group(2) or "").strip().lower().split()
+
+    # --- Optional post-download flags: `gd` (auto Drive upload), `del` (only with gd) ---
+    gd_opts = None
+    if args:
+        if args == ['gd']:
+            gd_opts = {"delete": False}
+        elif args == ['gd', 'del']:
+            gd_opts = {"delete": True}
+        elif 'del' in args:
+            return await event.reply(
+                "❌ **`del` can never be used on its own.**\n"
+                "It only works immediately after `gd`:\n"
+                f"**Correct:** `{cmd} gd del`"
+            )
+        else:
+            return await event.reply(
+                f"❌ **Invalid options:** `{' '.join(args)}`\n"
+                f"**Usage:** `{cmd}` | `{cmd} gd` | `{cmd} gd del`"
+            )
+
     if not event.is_reply: return await event.reply("❌ Reply to a file.")
     reply_msg = await event.get_reply_message()
     if not reply_msg.media: return await event.reply("❌ No media found.")
@@ -624,7 +651,6 @@ async def standard_handler(event):
     if reply_msg.file.size > MAX_FILE_SIZE_BYTES:
         return await event.reply(f"❌ **File too large.**\nLimit: {MAX_FILE_SIZE_GB}GB")
 
-    cmd = event.raw_text.strip().lower()
     target_dir = DIRECTORIES.get(cmd)
 
     # Filename Logic
@@ -634,8 +660,17 @@ async def standard_handler(event):
     
     clean_name = ensure_mkv_extension(sanitize_filename(possible_name))
 
+    if gd_opts:
+        folder_id, folder_label, _ = drive_target_for_key(cmd)
+        if not folder_id:
+            return await event.reply(
+                f"❌ **No Drive folder configured** for `{cmd}`.\n"
+                f"Set `MOVIES_DRIVE_FOLDER_ID` / `TV_DRIVE_FOLDER_ID` in `.env`."
+            )
+        gd_opts["label"] = folder_label
+
     position = queue.qsize() + 1
-    await queue.put((event, reply_msg, target_dir, clean_name))
+    await queue.put((event, reply_msg, target_dir, clean_name, gd_opts))
 
     if current_concurrent_count >= MAX_CONCURRENT_DOWNLOADS:
         await event.reply(f"⏳ **Queued (Standard)** (Pos: {position})")
@@ -975,6 +1010,10 @@ async def cmd_handler(event):
     help_texts = {
         "tgdl": "📥 **Downloads (`tgdl`)**\n\n"
                 "`/mv` / `/mv2` / `/tv` / `/tv2` / `/docu` - Save media to respective folder.\n*Example:* Reply to a `.mkv` file with `/docu`\n\n"
+                "☁️ **Auto Drive hand-off (optional flags, `/mv` & `/tv`):**\n"
+                "`gd` - After the download finishes, auto-upload to that folder's Drive counterpart (`mv` ➡️ `1#movies`, `tv` ➡️ `2#tv`).\n*Example:* `/mv gd`\n\n"
+                "`gd del` - Same, then delete the local copy once the upload succeeds.\n*Example:* `/tv gd del`\n"
+                "*(`del` only ever works right after `gd`. On its own it's rejected, and the local file is never deleted if the upload fails or is cancelled.)*\n\n"
                 "`/lmv <link>` / `/ltv <link>` - Fetch restricted links.\n*Example:* `/lmv https://t.me/c/123/456`\n\n"
                 "🔍 **Bulk Search & Download:**\n"
                 "`/search <Channel_ID> (<keywords>)` - Get a JSON list of files matching keywords.\n*Example:* `/search -10012345678 (spider man)`\n\n"
@@ -993,10 +1032,14 @@ async def cmd_handler(event):
                 "*(Supports replying to a .txt manifest for batch queuing)*",
                 
         "gd":   "☁️ **Google Drive (`gd`)**\n\n"
-                "`/gd` - Upload a completed download to Drive.\n*Example:* Reply to a download success message with `/gd`\n\n"
-                "`/gd \"<dir_key>/<name>\"` - Directly upload a specific file/folder.\n*Example:* `/gd \"tv/Breaking Bad\"`\n\n"
-                "`/gd x <link> [filename.ext]` - Stream a direct download link straight to Drive without saving to disk.\n"
-                "*Example:* `/gd x https://host/file.mkv`\n"
+                "📁 **Folders:** `mv` ➡️ `1#movies` | `tv` ➡️ `2#tv`\n\n"
+                "`/gd` - Upload a completed download to Drive.\n*Example:* Reply to a download success message with `/gd`\n"
+                "*(Folder is auto-detected from the file's local path.)*\n\n"
+                "`/gd <mv|tv> \"<name>\"` - Upload a file/folder from that local dir to its Drive counterpart.\n"
+                "*Example:* `/gd tv \"Breaking Bad\"`\n"
+                "*(Legacy `/gd \"tv/Breaking Bad\"` still works.)*\n\n"
+                "`/gd x <mv|tv> <link> [filename.ext] [-u user] [-p pass]` - Stream a direct link straight to Drive without touching disk.\n"
+                "*Example:* `/gd x mv https://host/file.mkv -u user -p pass123`\n"
                 "*(Optional filename forces a name when the link can't supply one. Best for clean direct links; use `/aria` for cookie/login-gated ones.)*",
 
         "unzip": "🗜️ **Archive Management (`unzip`)**\n\n"
@@ -1027,11 +1070,13 @@ async def cmd_handler(event):
         await event.reply(f"❌ **Unknown module:** `{module}`\nAvailable modules: `tgdl`, `aria`, `ytdl`, `gd`, `unzip`, `fm`, `misc`")
         
         
-async def _gd_stream_url(event, url, filename=None, username=None, password=None):
+async def _gd_stream_url(event, url, filename=None, username=None, password=None,
+                         folder_id=None, folder_label="default"):
     """Direct streaming pass-through: URL -> Google Drive, nothing touches disk."""
     target_name = filename or url.split("/")[-1].split("?")[0] or "download"
     status_msg = await event.reply(
-        f"🌊 **Streaming to Google Drive (no disk):**\n`{target_name}`\n\n*(Starting rclone...)*"
+        f"🌊 **Streaming to Google Drive (no disk):**\n`{target_name}`\n"
+        f"📁 **Destination:** `{folder_label}`\n\n*(Starting rclone...)*"
     )
 
     start_time = time.time()
@@ -1048,14 +1093,14 @@ async def _gd_stream_url(event, url, filename=None, username=None, password=None
     def render():
         elapsed = fmt_elapsed()
         if state["body"] is None:
-            return (f"🌊 **Streaming to Drive:** `{target_name}`\n"
+            return (f"🌊 **Streaming to Drive:** `{target_name}` ➡️ `{folder_label}`\n"
                     f"⏳ Connecting & transferring... (elapsed `{elapsed}`)")
         if state["pct"] is None:
             head = "🌊 *transferring (total size unknown)*"
         else:
             blocks = state["pct"] // 10
             head = "🟦" * blocks + "⬜" * (10 - blocks) + f" **{state['pct']}%**"
-        return (f"🌊 **Streaming to Drive:** `{target_name}`\n"
+        return (f"🌊 **Streaming to Drive:** `{target_name}` ➡️ `{folder_label}`\n"
                 f"{head}\n"
                 f"⏳ elapsed `{elapsed}`\n"
                 f"`{state['body']}`")
@@ -1083,9 +1128,10 @@ async def _gd_stream_url(event, url, filename=None, username=None, password=None
     try:
         await stream_url_to_drive(url, stream_progress, cancel_flag, 
                                   filename=filename, username=username, 
-                                  password=password)
+                                  password=password, folder_id=folder_id)
         await status_msg.edit(
             f"✅ **Streamed to Google Drive!**\n☁️ `{target_name}`\n"
+            f"📁 **Folder:** `{folder_label}`\n"
             f"⏳ took `{fmt_elapsed()}`"
         )
     except Exception as e:
@@ -1119,24 +1165,34 @@ async def gd_handler(event):
             return base_path
         return path_str 
 
-    # SCENARIO 1: Standalone command with path (/gd "tv/Show Name")
+    # SCENARIO 1: Standalone command with category + name (/gd tv "Show Name")
     if args_str:
         try:
             args = shlex.split(args_str)
         except ValueError as e:
             return await event.reply(f"❌ **Parse Error:** Check your quotes.\n`{str(e)}`")
 
-        # --- streaming pass-through:  /gd x <direct download link> [filename] [-u username] [-p password] ---
+        # --- streaming pass-through:  /gd x <mv|tv> <link> [filename] [-u user] [-p pass] ---
         if args and args[0].lower() == 'x':
-            if len(args) < 2:
-                return await event.reply("❌ **Usage:** `/gd x <direct download link> [filename.ext] [-u user] [-p pass]`")
-            
-            url = args[1]
+            args = args[1:]
+
+            # Category is optional purely for backwards compatibility.
+            cat = None
+            if args and args[0].lower() in DRIVE_FOLDERS:
+                cat = args.pop(0).lower()
+
+            if not args:
+                return await event.reply(
+                    "❌ **Usage:** `/gd x <mv|tv> <direct download link> [filename.ext] [-u user] [-p pass]`\n"
+                    "*Example:* `/gd x mv https://host/file.mkv -u user -p pass123`"
+                )
+
+            url = args[0]
             opt_name = None
             username = None
             password = None
             
-            i = 2
+            i = 1
             while i < len(args):
                 if args[i] == "-u" and i + 1 < len(args):
                     username = args[i+1]
@@ -1150,9 +1206,29 @@ async def gd_handler(event):
                 else:
                     i += 1
 
-            return await _gd_stream_url(event, url, filename=opt_name, username=username, password=password)
+            folder_id, folder_label, _ = drive_target_for_key(cat)
+            if not folder_id:
+                return await event.reply(
+                    f"❌ **No Drive folder configured** for `{cat or 'default'}`.\n"
+                    f"Set `MOVIES_DRIVE_FOLDER_ID` / `TV_DRIVE_FOLDER_ID` in `.env`."
+                )
 
-        if args:
+            return await _gd_stream_url(event, url, filename=opt_name, username=username,
+                                        password=password, folder_id=folder_id,
+                                        folder_label=folder_label)
+
+        # --- /gd <mv|tv> "<file or folder name>" ---
+        if args and args[0].lower() in DRIVE_FOLDERS:
+            cat = args.pop(0).lower()
+            if not args:
+                return await event.reply(
+                    f"❌ **Usage:** `/gd {cat} \"<file_or_folder_name>\"`\n"
+                    f"*Example:* `/gd {cat} \"Breaking Bad\"`"
+                )
+            filepath = os.path.join(DIRECTORIES[f"/{cat}"], args[0].lstrip('/'))
+
+        elif args:
+            # Legacy form still works: /gd "tv/Breaking Bad" or an absolute path
             filepath = resolve_path(args[0])
 
     # SCENARIO 2: Reply to a completed download message
@@ -1181,7 +1257,17 @@ async def gd_handler(event):
         return await event.reply(f"❌ **File or Folder not found on disk:**\n`{filepath}`")
 
     target_name = os.path.basename(filepath)
-    status_msg = await event.reply(f"☁️ **Uploading to Google Drive:**\n`{target_name}`...\n\n*(Calculating...)*")
+    drive_folder_id, drive_label, drive_base = drive_target_for_path(filepath)
+    if not drive_folder_id:
+        return await event.reply(
+            f"❌ **No Drive folder configured** for `{filepath}`.\n"
+            f"Set `MOVIES_DRIVE_FOLDER_ID` / `TV_DRIVE_FOLDER_ID` in `.env`."
+        )
+
+    status_msg = await event.reply(
+        f"☁️ **Uploading to Google Drive:**\n`{target_name}`\n"
+        f"📁 **Destination:** `{drive_label}`\n\n*(Calculating...)*"
+    )
 
     # --- NEW: Thread-safe Progress Tracking ---
     last_update_time = [0]
@@ -1201,7 +1287,7 @@ async def gd_handler(event):
         progress_str = "🟦" * completed_blocks + "⬜" * (10 - completed_blocks)
         
         text = (
-            f"☁️ **Uploading to Drive:** `{target_name}`\n"
+            f"☁️ **Uploading to Drive:** `{target_name}` ➡️ `{drive_label}`\n"
             f"📄 **Current File:** `{current_file_name}`\n"
             f"{progress_str} **{percentage:.1f}%**\n"
             f"💾 `{format_bytes(current)} / {format_bytes(total)}`\n"
@@ -1238,9 +1324,15 @@ async def gd_handler(event):
 
     try:
         # Run the blocking Google API upload in a background thread, passing callback AND flag
-        await asyncio.to_thread(upload_single_target, filepath, drive_progress_sync, cancel_flag)
+        await asyncio.to_thread(upload_single_target, filepath, drive_progress_sync,
+                                cancel_flag, drive_folder_id, drive_base)
         
-        await status_msg.edit(f"✅ **Google Drive Upload Complete!**\n☁️ **Uploaded:** `{target_name}`\n📂 **Source:** `{filepath}`")
+        await status_msg.edit(
+            f"✅ **Google Drive Upload Complete!**\n"
+            f"☁️ **Uploaded:** `{target_name}`\n"
+            f"📁 **Folder:** `{drive_label}`\n"
+            f"📂 **Source:** `{filepath}`"
+        )
     except Exception as e:
         if cancel_flag.get("cancelled"):
             await status_msg.edit(f"🛑 **Google Drive Upload Cancelled:**\n`{target_name}`")

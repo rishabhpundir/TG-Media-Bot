@@ -58,15 +58,13 @@ def _redact_url(arg):
     return urlunsplit((parts.scheme, f"***:***@{host}", parts.path, parts.query, parts.fragment))
 
 
-async def stream_url_to_drive(url, status_callback=None, cancel_flag=None, filename=None, username=None, password=None):
-    """Stream a direct-download URL straight into Google Drive via `rclone copyurl`.
-
-    No bytes touch local disk. status_callback(pct, body) is awaited per stats
-    line: pct is an int 0-100, or None when the source omits Content-Length.
-    cancel_flag is a dict like {"cancelled": False}; set True to abort.
-    """
-    if not TARGET_DRIVE_FOLDER_ID:
-        raise Exception("TARGET_DRIVE_FOLDER_ID is not set in .env")
+async def stream_url_to_drive(url, status_callback=None, cancel_flag=None, filename=None,
+                              username=None, password=None, folder_id=None):
+    """..."""
+    dest_folder_id = folder_id or TARGET_DRIVE_FOLDER_ID
+    if not dest_folder_id:
+        raise Exception("No Drive folder resolved. Set MOVIES_DRIVE_FOLDER_ID / "
+                        "TV_DRIVE_FOLDER_ID (or TARGET_DRIVE_FOLDER_ID) in .env")
 
     name = filename or derive_filename(url)
 
@@ -84,7 +82,7 @@ async def stream_url_to_drive(url, status_callback=None, cancel_flag=None, filen
         cmd += ["--auto-filename", "--header-filename"]
 
     cmd += [
-        "--drive-root-folder-id", TARGET_DRIVE_FOLDER_ID,
+        "--drive-root-folder-id", dest_folder_id,
         "--stats", "2s",
         "--stats-one-line",
         "-v",

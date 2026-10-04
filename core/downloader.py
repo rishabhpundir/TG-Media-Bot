@@ -8,8 +8,9 @@ from datetime import datetime
 from telethon.errors import FileReferenceExpiredError
 
 from core.utils import format_bytes
-from config import MAX_CONCURRENT_DOWNLOADS
+from config import MAX_CONCURRENT_DOWNLOADS, drive_target_for_path
 from state import queue, active_downloads, current_concurrent_count
+from gdrive.gdriveup import upload_single_target
 
 logger = logging.getLogger(__name__)
 
@@ -182,12 +183,19 @@ async def download_worker():
         
         # Unpack job. 
         # 'media_msg' is the message containing the file (might be from Bot OR Userbot)
-        event, media_msg, download_path, filename = job
+        # 5th slot is optional so existing 4-tuple producers (link_handler) keep working.
+        event, media_msg, download_path, filename = job[:4]
+        gd_opts = job[4] if len(job) > 4 else None
         
-        status_msg = await event.reply(f"⬇️ **Starting Download:** `{filename}`")
+        header = f"⬇️ **Starting Download:** `{filename}`"
+        if gd_opts:
+            header += f"\n☁️ **Then auto-upload ➡️** `{gd_opts.get('label', '?')}`"
+            header += ("\n🗑️ **Then delete local copy**" if gd_opts.get("delete")
+                       else "\n🗑️ **Local copy will be kept**")
+        status_msg = await event.reply(header)
         
         task = asyncio.create_task(
-            perform_download(status_msg, media_msg, download_path, filename)
+            perform_download(status_msg, media_msg, download_path, filename, gd_opts)
         )
         active_downloads[status_msg.id] = task
         
@@ -202,7 +210,7 @@ async def download_worker():
             queue.task_done()
 
 
-async def perform_download(status_msg, media_msg, folder_path, clean_name):
+async def perform_download(status_msg, media_msg, folder_path, clean_name, gd_opts=None):
     os.makedirs(folder_path, exist_ok=True)
     final_path = os.path.join(folder_path, clean_name)
     temp_path = final_path + ".part"
@@ -215,11 +223,15 @@ async def perform_download(status_msg, media_msg, folder_path, clean_name):
     file_uid = _get_file_uid(media_msg)
     if file_uid:
         existing = await _ledger_get(file_uid)
-        if existing and os.path.exists(existing.get('path', '')):
+        on_disk = os.path.exists(existing.get('path', '')) if existing else False
+        in_drive = bool(existing and existing.get('drive_folder'))
+        if existing and (on_disk or in_drive):
+            where = (f"📂 Existing: `{existing['path']}`" if on_disk
+                     else f"☁️ In Drive: `{existing['drive_folder']}` *(local copy deleted)*")
             await status_msg.edit(
                 f"⏭️ **Already downloaded — skipping**\n"
                 f"`{clean_name}`\n"
-                f"📂 Existing: `{existing['path']}`\n"
+                f"{where}\n"
                 f"📅 On: `{existing.get('downloaded_at', 'unknown')}`"
             )
             return
@@ -373,11 +385,17 @@ async def perform_download(status_msg, media_msg, folder_path, clean_name):
             })
 
         file_size_str = format_bytes(os.path.getsize(final_path))
-        await status_msg.edit(
+        # Kept as a prefix on every later edit so that replying `/gd`, `/del` or
+        # `/unzip` to this message still finds the "📂 **Path:** `...`" line.
+        base_text = (
             f"✅ **Download Complete!**\n"
             f"💾 **Size:** `{file_size_str}`\n"
             f"📂 **Path:** `{final_path}`"
         )
+        await status_msg.edit(base_text)
+
+        if gd_opts:
+            await _auto_gdrive_upload(status_msg, final_path, base_text, gd_opts, file_uid)
 
     except asyncio.CancelledError:
         if os.path.exists(temp_path): os.remove(temp_path)
@@ -389,3 +407,93 @@ async def perform_download(status_msg, media_msg, folder_path, clean_name):
         await status_msg.edit(f"❌ **Error downloading:** `{e}`")
 
 
+async def _auto_gdrive_upload(status_msg, final_path, base_text, gd_opts, file_uid=None):
+    """Post-download: push the finished file to its Drive counterpart, then
+    optionally remove the local copy. Reports every stage on the same message."""
+    # Deferred import: handlers imports downloader's siblings, so keep it lazy.
+    from core.handlers import active_gd_uploads
+
+    folder_id, folder_label, media_root = drive_target_for_path(final_path)
+    if not folder_id:
+        return await status_msg.edit(
+            base_text + "\n\n☁️ **Drive:** ❌ No folder ID configured for this directory."
+        )
+
+    last_edit = [0]
+    start = [time.time()]
+    cur_file = [""]
+    main_loop = asyncio.get_running_loop()
+
+    async def _edit(current, total, name):
+        elapsed = time.time() - start[0]
+        speed = current / elapsed if elapsed > 0 else 0
+        eta = (total - current) / speed if speed > 0 else 0
+        pct = (current * 100) / total if total > 0 else 0
+        blocks = int(pct // 10)
+        bar = "🟦" * blocks + "⬜" * (10 - blocks)
+        try:
+            await status_msg.edit(
+                base_text +
+                f"\n\n☁️ **Uploading to Drive ➡️** `{folder_label}`\n"
+                f"📄 `{name}`\n"
+                f"{bar} **{pct:.1f}%**\n"
+                f"💾 `{format_bytes(current)} / {format_bytes(total)}`\n"
+                f"🚀 `{format_bytes(speed)}/s` | ⏳ `{int(eta)}s`\n\n"
+                f"reply `/cancel` to abort the upload."
+            )
+        except Exception:
+            pass
+
+    def _progress(current, total, name):
+        if name != cur_file[0]:
+            cur_file[0] = name
+            start[0] = time.time()
+        now = time.time()
+        if (now - last_edit[0]) < 3 and current != total:
+            return
+        last_edit[0] = now
+        asyncio.run_coroutine_threadsafe(_edit(current, total, name), main_loop)
+
+    cancel_flag = {"cancelled": False}
+    active_gd_uploads[status_msg.id] = cancel_flag
+
+    try:
+        await asyncio.to_thread(upload_single_target, final_path, _progress,
+                                cancel_flag, folder_id, media_root)
+    except Exception as e:
+        if cancel_flag.get("cancelled"):
+            tail = ("\n\n☁️ **Drive:** 🛑 Upload cancelled\n"
+                    "🗑️ **Local:** ✅ Kept (nothing deleted)")
+            logger.info(f"Auto Drive upload cancelled: {final_path}")
+        else:
+            tail = (f"\n\n☁️ **Drive:** ❌ Upload failed — `{e}`\n"
+                    f"🗑️ **Local:** ✅ Kept\n"
+                    f"*(Reply `/gd` to this message to retry.)*")
+            logger.exception(f"Auto Drive upload failed for {final_path}: {e}")
+        return await status_msg.edit(base_text + tail)
+    finally:
+        active_gd_uploads.pop(status_msg.id, None)
+
+    tail = f"\n\n☁️ **Drive:** ✅ Uploaded ➡️ `{folder_label}`"
+
+    # Mark it in the ledger so a `del`'d file isn't re-downloaded later.
+    if file_uid:
+        try:
+            entry = (await _ledger_get(file_uid)) or {}
+            entry['drive_folder'] = folder_label
+            entry['drive_uploaded_at'] = datetime.now().isoformat(timespec='seconds')
+            await _ledger_set(file_uid, entry)
+        except Exception as e:
+            logger.warning(f"Ledger drive-mark failed for {final_path}: {e}")
+
+    if gd_opts.get("delete"):
+        try:
+            os.remove(final_path)
+            tail += "\n🗑️ **Local:** ✅ Deleted after successful upload"
+        except Exception as e:
+            tail += f"\n🗑️ **Local:** ❌ Delete failed — `{e}`"
+    else:
+        tail += "\n🗑️ **Local:** ✅ Kept *(add `del` to auto-remove)*"
+
+    await status_msg.edit(base_text + tail)
+    

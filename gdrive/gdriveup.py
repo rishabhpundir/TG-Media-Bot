@@ -40,6 +40,10 @@ LEDGER_PATH = os.path.join(SCRIPT_DIR, 'ledger.json')
 TARGET_DRIVE_FOLDER_ID = os.getenv('TARGET_DRIVE_FOLDER_ID')
 LIST_FILE_NAME = 'upload.txt'
 
+# Ledger is namespaced per Drive folder, otherwise movies/X.mkv and tv/X.mkv
+# share a ledger key and the second upload gets silently skipped.
+LEDGER_ROOT_KEY = 'root'
+
 # Lock credentials to the script's directory
 TOKEN_PATH = os.path.join(SCRIPT_DIR, 'token.json')
 CREDS_PATH = os.path.join(SCRIPT_DIR, 'credentials.json')
@@ -79,7 +83,7 @@ def check_ledger(full_path):
     rel_path = os.path.relpath(full_path, BASE_DIR)
     parts = rel_path.split(os.sep)
     
-    current = ledger["root"]
+    current = ledger.get(LEDGER_ROOT_KEY) or {}
     for i, part in enumerate(parts):
         if part not in current:
             return None
@@ -98,7 +102,9 @@ def update_ledger(full_path, gid, is_folder):
     rel_path = os.path.relpath(full_path, BASE_DIR)
     parts = rel_path.split(os.sep)
     
-    current = ledger["root"]
+    if LEDGER_ROOT_KEY not in ledger:
+        ledger[LEDGER_ROOT_KEY] = {}
+    current = ledger[LEDGER_ROOT_KEY]
     for i, part in enumerate(parts):
         if part not in current:
             ledger["srn_counter"] += 1
@@ -261,26 +267,35 @@ def upload_directory(service, dir_path, parent_id, progress_callback=None, cance
             upload_directory(service, item_path, drive_folder_id, progress_callback, cancel_flag)
 
 
-def upload_single_target(target_path, progress_callback=None, cancel_flag=None):
-    """Entry point for the Telegram bot to upload a specific file/folder."""
-    global BASE_DIR
+def upload_single_target(target_path, progress_callback=None, cancel_flag=None,
+                         folder_id=None, base_dir=None):
+    """Entry point for the Telegram bot to upload a specific file/folder.
+
+    folder_id : Drive destination (movies/tv). Falls back to the legacy single folder.
+    base_dir  : local media root the ledger paths are keyed against. Defaults to the
+                parent dir, which flattens nested shows -- always pass the real root.
+    """
+    global BASE_DIR, LEDGER_ROOT_KEY
     
-    if not TARGET_DRIVE_FOLDER_ID:
-        raise Exception("TARGET_DRIVE_FOLDER_ID is not set in .env")
+    dest_folder_id = folder_id or TARGET_DRIVE_FOLDER_ID
+    if not dest_folder_id:
+        raise Exception("No Drive folder resolved. Set MOVIES_DRIVE_FOLDER_ID / "
+                        "TV_DRIVE_FOLDER_ID (or TARGET_DRIVE_FOLDER_ID) in .env")
         
     target_path = os.path.abspath(target_path)
     if not os.path.exists(target_path):
         raise Exception(f"Path does not exist on disk: {target_path}")
 
-    BASE_DIR = os.path.dirname(target_path)
+    BASE_DIR = os.path.abspath(base_dir) if base_dir else os.path.dirname(target_path)
+    LEDGER_ROOT_KEY = f"root:{dest_folder_id}"
     
-    logger.info(f"Bot triggered Drive upload for: {target_path}")
+    logger.info(f"Bot triggered Drive upload for: {target_path} -> folder {dest_folder_id}")
     service = authenticate()
     
     if os.path.isfile(target_path):
-        upload_file(service, target_path, TARGET_DRIVE_FOLDER_ID, progress_callback, cancel_flag)
+        upload_file(service, target_path, dest_folder_id, progress_callback, cancel_flag)
     elif os.path.isdir(target_path):
-        upload_directory(service, target_path, TARGET_DRIVE_FOLDER_ID, progress_callback, cancel_flag)
+        upload_directory(service, target_path, dest_folder_id, progress_callback, cancel_flag)
 
 
 def main():

@@ -69,7 +69,7 @@ def register_handlers():
     bot.add_event_handler(handlers.ytdl_handler, events.NewMessage(pattern=r'^/ytdl(?:\s+(.*))?$'))
 
     # 📥 Standard & Link Downloads
-    bot.add_event_handler(handlers.standard_handler, events.NewMessage(pattern=r'^/(mv|tv|mv2|tv2|docu)$'))
+    bot.add_event_handler(handlers.standard_handler, events.NewMessage(pattern=r'^/(mv|tv|mv2|tv2|docu)(?:\s+(.*))?$'))
     bot.add_event_handler(handlers.link_handler, events.NewMessage(pattern=r'^/l(mv|tv|mv2|tv2|docu)'))
     
     # 🔍 Userbot Search & Batch (NEW)
@@ -95,7 +95,9 @@ async def main():
             BotCommand(command="cls", description="Clear Chat Messages"),
             BotCommand(command="cmd", description="View Help Categories"),
             BotCommand(command="del", description="Delete Files"),
-            BotCommand(command="gd", description="Drive upload | stream a link: /gd x <link>"),
+            BotCommand(command="gd", description="Drive upload: /gd mv|tv <name> | /gd x mv|tv <link>"),
+            BotCommand(command="mv", description="Reply to file -> Movies [gd] [gd del]"),
+            BotCommand(command="tv", description="Reply to file -> TV [gd] [gd del]"),
             BotCommand(command="search", description="Search channel: /search <ID> (<keywords>) [limit]"),
         ]
         ))
