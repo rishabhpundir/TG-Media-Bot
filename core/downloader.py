@@ -1,5 +1,4 @@
 import os
-import json
 import time
 import asyncio
 import logging
@@ -7,6 +6,7 @@ from datetime import datetime
 
 from telethon.errors import FileReferenceExpiredError
 
+import ledger_db
 from core.utils import format_bytes
 from config import MAX_CONCURRENT_DOWNLOADS, drive_target_for_path
 from state import queue, active_downloads, current_concurrent_count
@@ -28,18 +28,10 @@ _sender_last_reset = 0.0
 
 
 # =================== DOWNLOAD LEDGER ===================
-# Tracks completed downloads by Telegram's permanent file_id (NOT filename,
-# NOT path) so duplicates are detected even after renames or moves.
-# Flat JSON dict, written atomically via tmp+rename to survive crashes.
-
-# Lives at project root, alongside main.py.
-DOWNLOAD_LEDGER_PATH = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.realpath(__file__))),
-    'download_ledger.json'
-)
-
-_ledger_lock = asyncio.Lock()
-_ledger_cache = None  # Lazy-loaded on first access; kept in sync with disk.
+# Backed by SQLite (ledger_db.downloads). Keyed on Telegram's permanent
+# file_id, so duplicates are caught even after renames or moves.
+# The old download_ledger.json + in-process cache are gone: SQLite reads
+# are ~5 microseconds, so a cache bought nothing but staleness risk.
 
 
 def _get_file_uid(media_msg):
@@ -60,47 +52,15 @@ def _get_file_uid(media_msg):
     return None
 
 
-def _ledger_load_sync():
-    """Sync read — must be called via asyncio.to_thread."""
-    if not os.path.exists(DOWNLOAD_LEDGER_PATH):
-        return {}
-    try:
-        with open(DOWNLOAD_LEDGER_PATH, 'r') as f:
-            data = json.load(f)
-            return data if isinstance(data, dict) else {}
-    except (json.JSONDecodeError, OSError) as e:
-        logger.warning(f"Ledger read failed ({e}); starting empty for this session.")
-        return {}
-
-
-def _ledger_save_sync(data):
-    """Sync write with atomic tmp+rename — must be called via asyncio.to_thread."""
-    tmp = DOWNLOAD_LEDGER_PATH + ".tmp"
-    with open(tmp, 'w') as f:
-        json.dump(data, f, indent=2)
-    os.replace(tmp, DOWNLOAD_LEDGER_PATH)
-
-
 async def _ledger_get(file_uid):
     """Return ledger entry for a file UID, or None."""
-    global _ledger_cache
-    async with _ledger_lock:
-        if _ledger_cache is None:
-            _ledger_cache = await asyncio.to_thread(_ledger_load_sync)
-        return _ledger_cache.get(file_uid)
+    return await asyncio.to_thread(ledger_db.get_download, file_uid)
 
 
 async def _ledger_set(file_uid, entry):
-    """Record a completed download and flush to disk."""
-    global _ledger_cache
-    async with _ledger_lock:
-        if _ledger_cache is None:
-            _ledger_cache = await asyncio.to_thread(_ledger_load_sync)
-        _ledger_cache[file_uid] = entry
-        # Snapshot so the (slow) disk write can't race with future mutations.
-        snapshot = dict(_ledger_cache)
-        await asyncio.to_thread(_ledger_save_sync, snapshot)
-
+    """Record a completed download."""
+    await asyncio.to_thread(ledger_db.put_download, file_uid, entry)
+    
 
 async def _reset_borrowed_senders(client):
     """

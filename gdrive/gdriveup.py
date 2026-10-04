@@ -12,6 +12,7 @@ from logging.handlers import RotatingFileHandler
 from googleapiclient.http import MediaFileUpload
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
+import ledger_db
 from gdrive.auth import get_service
 
 # --- LOGGING SETUP ---
@@ -35,8 +36,6 @@ load_dotenv(os.path.join(SCRIPT_DIR, '.env'))
 SCOPES = ['https://www.googleapis.com/auth/drive.file']
 socket.setdefaulttimeout(300)
 
-BASE_DIR = None
-LEDGER_PATH = os.path.join(SCRIPT_DIR, 'ledger.json')
 TARGET_DRIVE_FOLDER_ID = os.getenv('TARGET_DRIVE_FOLDER_ID')
 LIST_FILE_NAME = 'upload.txt'
 
@@ -49,88 +48,32 @@ TOKEN_PATH = os.path.join(SCRIPT_DIR, 'token.json')
 CREDS_PATH = os.path.join(SCRIPT_DIR, 'credentials.json')
 
 
-# JSON Ledger
-def get_size_in_gb(path):
-    """Calculates size of file or folder in GB."""
-    total_size = 0
-    if os.path.isfile(path):
-        total_size = os.path.getsize(path)
-    elif os.path.isdir(path):
-        for dirpath, _, filenames in os.walk(path):
-            for f in filenames:
-                fp = os.path.join(dirpath, f)
-                if not os.path.islink(fp):
-                    total_size += os.path.getsize(fp)
-    return f"{total_size / (1024**3):.4f} GB"
+# SQLite Ledger (see ledger_db.py)
+def get_size_bytes(path):
+    """Size of a file in bytes. Folders return None -- we no longer walk the
+    whole subtree just to record a number nothing reads."""
+    try:
+        return os.path.getsize(path) if os.path.isfile(path) else None
+    except OSError:
+        return None
 
-def load_ledger():
-    if os.path.exists(LEDGER_PATH):
-        try:
-            with open(LEDGER_PATH, 'r') as f:
-                return json.load(f)
-        except json.JSONDecodeError:
-            pass
-    return {"srn_counter": 0, "root": {}}
 
-def save_ledger(ledger_data):
-    with open(LEDGER_PATH, 'w') as f:
-        json.dump(ledger_data, f, indent=4)
+def check_ledger(full_path, parent_id):
+    """Drive id if this exact absolute path was already uploaded into this
+    exact Drive folder, else None. Zero API calls."""
+    return ledger_db.get_upload(full_path, parent_id)
 
-def check_ledger(full_path):
-    """Checks if a path is fully uploaded in the ledger."""
-    if not BASE_DIR: return None
-    ledger = load_ledger()
-    rel_path = os.path.relpath(full_path, BASE_DIR)
-    parts = rel_path.split(os.sep)
-    
-    current = ledger.get(LEDGER_ROOT_KEY) or {}
-    for i, part in enumerate(parts):
-        if part not in current:
-            return None
-        if i == len(parts) - 1:
-            item = current[part]
-            if item.get("uploaded") and item.get("gid"):
-                return item["gid"]
-            return None
-        current = current[part].get("contents", {})
-    return None
 
-def update_ledger(full_path, gid, is_folder):
-    """Updates the ledger with the nested folder/file structure."""
-    if not BASE_DIR: return
-    ledger = load_ledger()
-    rel_path = os.path.relpath(full_path, BASE_DIR)
-    parts = rel_path.split(os.sep)
-    
-    if LEDGER_ROOT_KEY not in ledger:
-        ledger[LEDGER_ROOT_KEY] = {}
-    current = ledger[LEDGER_ROOT_KEY]
-    for i, part in enumerate(parts):
-        if part not in current:
-            ledger["srn_counter"] += 1
-            current[part] = {
-                "srn": ledger["srn_counter"],
-                "name": part,
-                "gid": gid if i == len(parts) - 1 else None,
-                "uploaded": True if i == len(parts) - 1 else False,
-                "size": get_size_in_gb(full_path) if i == len(parts) - 1 else "0 GB",
-            }
-            if is_folder or i < len(parts) - 1:
-                current[part]["contents"] = {}
-        else:
-            # Update target item
-            if i == len(parts) - 1:
-                current[part]["gid"] = gid
-                current[part]["uploaded"] = True
-                current[part]["size"] = get_size_in_gb(full_path)
-        
-        # Traverse deeper
-        if "contents" not in current[part]:
-            current[part]["contents"] = {}
-        current = current[part]["contents"]
-        
-    save_ledger(ledger)
-    
+def update_ledger(full_path, parent_id, gid, is_folder):
+    """Record an upload against (absolute path, Drive parent folder)."""
+    ledger_db.put_upload(
+        path=full_path,
+        parent_id=parent_id,
+        gid=gid,
+        is_folder=is_folder,
+        size_bytes=get_size_bytes(full_path),
+    )
+
 
 # Google Drive Interaction
 def authenticate():
@@ -163,14 +106,14 @@ def create_drive_folder(service, dir_path, parent_id):
     folder_name = os.path.basename(dir_path)
     
     # 1. Check local ledger first (Zero API calls)
-    ledger_gid = check_ledger(dir_path)
+    ledger_gid = check_ledger(dir_path, parent_id)
     if ledger_gid:
         return ledger_gid
 
     # 2. Check Drive API if not in ledger
     existing_folder_id = get_existing_item(service, folder_name, parent_id, is_folder=True)
     if existing_folder_id:
-        update_ledger(dir_path, existing_folder_id, is_folder=True)
+        update_ledger(dir_path, parent_id, existing_folder_id, True)
         return existing_folder_id
 
     file_metadata = {
@@ -185,7 +128,7 @@ def create_drive_folder(service, dir_path, parent_id):
     ).execute(num_retries=5)
     
     folder_id = folder.get('id')
-    update_ledger(dir_path, folder_id, is_folder=True)
+    update_ledger(dir_path, parent_id, folder_id, True)
     return folder_id
 
 
@@ -194,7 +137,7 @@ def upload_file(service, file_path, parent_id, progress_callback=None, cancel_fl
     file_name = os.path.basename(file_path)
     
     # 1. Check local ledger first (Zero API calls)
-    ledger_gid = check_ledger(file_path)
+    ledger_gid = check_ledger(file_path, parent_id)
     if ledger_gid:
         print(f"Skipping: '{file_name}' (Found in local Ledger)")
         logger.info(f"Skipping: '{file_name}' (Found in local Ledger)")
@@ -205,7 +148,7 @@ def upload_file(service, file_path, parent_id, progress_callback=None, cancel_fl
     if existing_file_id:
         print(f"Skipping: '{file_name}' (Already exists in Drive)")
         logger.info(f"Skipping: '{file_name}' (Already exists in Drive)")
-        update_ledger(file_path, existing_file_id, is_folder=False)
+        update_ledger(file_path, parent_id, existing_file_id, False)
         return existing_file_id
 
     file_metadata = {'name': file_name, 'parents': [parent_id]}
@@ -241,7 +184,7 @@ def upload_file(service, file_path, parent_id, progress_callback=None, cancel_fl
                 
     file_id = response.get('id')
     logger.info(f"Successfully uploaded: {file_name}")
-    update_ledger(file_path, file_id, is_folder=False)
+    update_ledger(file_path, parent_id, file_id, False)
     return file_id
 
 
@@ -271,27 +214,23 @@ def upload_single_target(target_path, progress_callback=None, cancel_flag=None,
                          folder_id=None, base_dir=None):
     """Entry point for the Telegram bot to upload a specific file/folder.
 
-    folder_id : Drive destination (movies/tv). Falls back to the legacy single folder.
-    base_dir  : local media root the ledger paths are keyed against. Defaults to the
-                parent dir, which flattens nested shows -- always pass the real root.
+    folder_id : Drive destination (movies / tv). Falls back to the legacy folder.
+    base_dir  : accepted and ignored. The SQLite ledger keys on absolute paths,
+                so there is no relative-path base to establish any more. Kept
+                so existing callers do not need changing.
     """
-    global BASE_DIR, LEDGER_ROOT_KEY
-    
     dest_folder_id = folder_id or TARGET_DRIVE_FOLDER_ID
     if not dest_folder_id:
         raise Exception("No Drive folder resolved. Set MOVIES_DRIVE_FOLDER_ID / "
                         "TV_DRIVE_FOLDER_ID (or TARGET_DRIVE_FOLDER_ID) in .env")
-        
+
     target_path = os.path.abspath(target_path)
     if not os.path.exists(target_path):
         raise Exception(f"Path does not exist on disk: {target_path}")
 
-    BASE_DIR = os.path.abspath(base_dir) if base_dir else os.path.dirname(target_path)
-    LEDGER_ROOT_KEY = f"root:{dest_folder_id}"
-    
     logger.info(f"Bot triggered Drive upload for: {target_path} -> folder {dest_folder_id}")
     service = authenticate()
-    
+
     if os.path.isfile(target_path):
         upload_file(service, target_path, dest_folder_id, progress_callback, cancel_flag)
     elif os.path.isdir(target_path):
@@ -311,7 +250,6 @@ def main():
         print("Usage: python script.py <base_directory>")
         sys.exit(1)
 
-    # Standardize the base directory for precise ledger mapping
     raw_base_dir = sys.argv[1]
     if raw_base_dir.endswith('/'):
         raw_base_dir = raw_base_dir[:-1]

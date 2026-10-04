@@ -318,10 +318,12 @@ bot_session.session
 logs/
 *credentials*
 *token*
-*ledger*
 *DS_Store*
 manifest.txt
 .python-version
 *output
 temp/
 musicenv
+*ledger.json
+
+
